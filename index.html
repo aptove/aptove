@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Aptove - Open Source Mobile App for AI Agent Chat">
+    <meta name="keywords" content="Aptove, AI agents, Agent Client Protocol, mobile app, open source">
+    <meta name="author" content="Aptove">
+    <title>Aptove - AI Agent Chat</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="container">
+                <div class="logo">
+                    <h1>Aptove</h1>
+                </div>
+                <ul class="nav-links">
+                    <li><a href="#home">Home</a></li>
+                    <li><a href="#about">About</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section id="home" class="hero">
+            <div class="container">
+                <div class="hero-content">
+                    <div class="status-badge">🚧 Work in Progress</div>
+                    <h2>Aptove</h2>
+                    <p class="tagline">Open Source Mobile App for AI Agent Chat</p>
+                    <p class="description">Chat with AI agents using the Agent Client Protocol. A powerful mobile application for seamless AI interactions.</p>
+                    <div id="countdown" class="countdown-container"></div>
+                    <div class="cta-buttons">
+                        <a href="https://github.com/aptove" target="_blank" class="cta-button primary">View on GitHub</a>
+                        <a href="#about" class="cta-button secondary">Learn More</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="about" class="about">
+            <div class="container">
+                <h2>About Aptove</h2>
+                <div class="about-content">
+                    <p><strong>Aptove</strong> is an open source mobile application that enables you to chat with AI agents using the Agent Client Protocol (ACP).</p>
+                    <p>Our mission is to make AI agent interactions accessible, seamless, and powerful on mobile devices. With Aptove, you can connect to various AI agents, have natural conversations, and leverage the power of AI wherever you go.</p>
+                    <div class="features-grid">
+                        <div class="feature-item">
+                            <div class="feature-icon">📱</div>
+                            <h3>Mobile First</h3>
+                            <p>Native mobile experience for iOS and Android</p>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-icon">🤖</div>
+                            <h3>Agent Client Protocol</h3>
+                            <p>Built on open standards for AI agent communication</p>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-icon">🔓</div>
+                            <h3>Open Source</h3>
+                            <p>Free and open for everyone to use and contribute</p>
+                        </div>
+                        <div class="feature-item">
+                            <div class="feature-icon">💬</div>
+                            <h3>Natural Chat</h3>
+                            <p>Intuitive conversations with AI agents</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="contact" class="contact">
+            <div class="container">
+                <h2>Join the Community</h2>
+                <div class="contact-content">
+                    <p>Aptove is open source and community-driven. Follow our progress and get involved!</p>
+                    <div class="contact-info">
+                        <p>⭐ <a href="https://github.com/aptove" target="_blank">Star us on GitHub</a></p>
+                        <p>🐛 <a href="https://github.com/aptove/aptove/issues" target="_blank">Report Issues</a></p>
+                        <p>🤝 <a href="https://github.com/aptove/aptove/blob/main/CONTRIBUTING.md" target="_blank">Contribute</a></p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 Aptove. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script>
+        // Countdown timer to end of February 2026
+        function updateCountdown() {
+            const targetDate = new Date('2026-02-28T23:59:59');
+            const now = new Date();
+            const difference = targetDate - now;
+            
+            if (difference > 0) {
+                const days = Math.floor(difference / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((difference % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((difference % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((difference % (1000 * 60)) / 1000);
+                
+                document.getElementById('countdown').innerHTML = 
+                    `<div class="countdown-timer">
+                        <div class="time-unit">
+                            <span class="time-value">${days}</span>
+                            <span class="time-label">Days</span>
+                        </div>
+                        <div class="time-unit">
+                            <span class="time-value">${hours}</span>
+                            <span class="time-label">Hours</span>
+                        </div>
+                        <div class="time-unit">
+                            <span class="time-value">${minutes}</span>
+                            <span class="time-label">Minutes</span>
+                        </div>
+                        <div class="time-unit">
+                            <span class="time-value">${seconds}</span>
+                            <span class="time-label">Seconds</span>
+                        </div>
+                    </div>`;
+            } else {
+                document.getElementById('countdown').innerHTML = `<p class="launch-message">We're live! 🚀</p>`;
+            }
+        }
+        
+        // Update countdown every second
+        setInterval(updateCountdown, 1000);
+        // Initial call
+        updateCountdown();
+    </script>
+</body>
+</html>
