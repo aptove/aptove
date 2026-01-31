@@ -8,8 +8,8 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     line-height: 1.6;
-    color: #333;
-    background-color: #fff;
+    color: #e0e7ef;
+    background-color: #0a1628;
 }
 
 .container {
@@ -20,11 +20,12 @@ body {
 
 /* Navigation */
 .navbar {
-    background-color: #fff;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    background-color: #0d1f35;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
     position: sticky;
     top: 0;
     z-index: 1000;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.1);
 }
 
 .navbar .container {
@@ -34,9 +35,20 @@ body {
     padding: 1rem 20px;
 }
 
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.logo-img {
+    height: 40px;
+    width: auto;
+}
+
 .logo h1 {
     font-size: 2rem;
-    color: #2563eb;
+    color: #00d4ff;
     font-weight: 700;
 }
 
@@ -48,33 +60,53 @@ body {
 
 .nav-links a {
     text-decoration: none;
-    color: #333;
+    color: #b8c5d6;
     font-weight: 500;
     transition: color 0.3s ease;
 }
 
 .nav-links a:hover {
-    color: #2563eb;
+    color: #00d4ff;
 }
 
 /* Hero Section */
 .hero {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #0a1628 0%, #0d2847 50%, #0a1628 100%);
     color: white;
     padding: 8rem 0;
     text-align: center;
+    position: relative;
+}
+
+.hero::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at center, rgba(0, 212, 255, 0.1) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.hero-logo {
+    width: 180px;
+    height: auto;
+    margin-bottom: 1.5rem;
+    filter: drop-shadow(0 0 30px rgba(0, 212, 255, 0.4));
 }
 
 .status-badge {
     display: inline-block;
-    background-color: rgba(255, 255, 255, 0.2);
+    background-color: rgba(0, 212, 255, 0.1);
     padding: 0.5rem 1.5rem;
     border-radius: 50px;
     font-size: 0.9rem;
     font-weight: 600;
     margin-bottom: 2rem;
     backdrop-filter: blur(10px);
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(0, 212, 255, 0.3);
+    color: #00d4ff;
 }
 
 .hero-content h2 {
@@ -114,11 +146,11 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: rgba(0, 212, 255, 0.05);
     padding: 1.5rem 2rem;
     border-radius: 15px;
     backdrop-filter: blur(10px);
-    border: 2px solid rgba(255, 255, 255, 0.2);
+    border: 2px solid rgba(0, 212, 255, 0.2);
     min-width: 100px;
 }
 
@@ -163,36 +195,42 @@ body {
 }
 
 .cta-button.primary {
-    background-color: white;
-    color: #667eea;
+    background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+    color: #0a1628;
 }
 
 .cta-button.secondary {
     background-color: transparent;
-    color: white;
-    border: 2px solid white;
+    border: 2px solid #00d4ff;
+    color: #00d4ff;
 }
 
 .cta-button:hover {
     transform: translateY(-2px);
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 10px 25px rgba(0, 212, 255, 0.3);
+}
+}
+
+.cta-button.secondary {
+    border-color: #00d4ff;
+    color: #00d4ff;
 }
 
 .cta-button.secondary:hover {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: rgba(0, 212, 255, 0.1);
 }
 
 /* About Section */
 .about {
     padding: 6rem 0;
-    background-color: #f9fafb;
+    background-color: #0d1f35;
 }
 
 .about h2 {
     font-size: 2.5rem;
     text-align: center;
     margin-bottom: 3rem;
-    color: #1f2937;
+    color: #00d4ff;
 }
 
 .about-content {
@@ -203,7 +241,7 @@ body {
 .about-content p {
     font-size: 1.1rem;
     margin-bottom: 1.5rem;
-    color: #4b5563;
+    color: #b8c5d6;
     line-height: 1.8;
     text-align: center;
 }
@@ -218,15 +256,17 @@ body {
 .feature-item {
     text-align: center;
     padding: 2rem;
-    background: white;
+    background: linear-gradient(135deg, #0a1628 0%, #122a45 100%);
     border-radius: 15px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
+    border: 1px solid rgba(0, 212, 255, 0.1);
 }
 
 .feature-item:hover {
     transform: translateY(-5px);
-    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 10px 30px rgba(0, 212, 255, 0.2);
+    border-color: rgba(0, 212, 255, 0.3);
 }
 
 .feature-icon {
@@ -237,26 +277,27 @@ body {
 .feature-item h3 {
     font-size: 1.3rem;
     margin-bottom: 0.5rem;
-    color: #1f2937;
+    color: #00d4ff;
 }
 
 .feature-item p {
     font-size: 1rem;
-    color: #6b7280;
+    color: #8fa3b8;
     margin-bottom: 0;
 }
 
 /* Contact Section */
 .contact {
     padding: 6rem 0;
-    background-color: #1f2937;
+    background-color: #0a1628;
+    border-top: 1px solid rgba(0, 212, 255, 0.1);
 }
 
 .contact h2 {
     font-size: 2.5rem;
     text-align: center;
     margin-bottom: 2rem;
-    color: white;
+    color: #00d4ff;
 }
 
 .contact-content {
@@ -281,23 +322,23 @@ body {
 }
 
 .contact-info a {
-    color: #60a5fa;
+    color: #00d4ff;
     text-decoration: none;
     transition: color 0.3s ease;
 }
 
 .contact-info a:hover {
-    color: #93c5fd;
+    color: #4de8ff;
     text-decoration: underline;
 }
 
 /* Footer */
 footer {
-    background-color: #111827;
-    color: white;
+    background-color: #060d17;
+    color: #8fa3b8;
     text-align: center;
     padding: 2rem 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid rgba(0, 212, 255, 0.1);
 }
 
 footer p {
