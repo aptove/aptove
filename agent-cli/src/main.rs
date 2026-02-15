@@ -546,6 +546,12 @@ async fn handle_session_prompt(
         .collect::<Vec<_>>()
         .join("\n");
 
+    info!(
+        session_id = %session_id,
+        prompt_len = prompt_text.len(),
+        "received session/prompt"
+    );
+
     // Lookup workspace for this session
     let workspace_uuid = state
         .session_workspaces

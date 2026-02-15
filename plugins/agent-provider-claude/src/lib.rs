@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use agent_core::plugin::{
     LlmProvider, LlmResponse, Message, MessageContent, ModelInfo, Role, StopReason,
@@ -33,7 +33,10 @@ impl ClaudeProvider {
             base_url: base_url
                 .unwrap_or("https://api.anthropic.com")
                 .to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client"),
         }
     }
 
@@ -147,7 +150,7 @@ impl LlmProvider for ClaudeProvider {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/v1/messages", self.base_url);
 
-        debug!(model = %self.model, url = %url, "calling Claude API (streaming)");
+        info!(model = %self.model, url = %url, "calling Claude API (streaming)");
 
         let response = self
             .client
@@ -179,6 +182,8 @@ impl LlmProvider for ClaudeProvider {
         // Track tool call metadata (index → (id, name))
         let mut tool_meta: std::collections::HashMap<usize, (String, String)> =
             std::collections::HashMap::new();
+
+        info!("Claude API connected, reading SSE stream");
 
         let mut stream = response.bytes_stream();
         let mut line_buffer = String::new();
@@ -349,6 +354,14 @@ impl LlmProvider for ClaudeProvider {
                 }
             }
         }
+
+        info!(
+            text_len = full_text.len(),
+            tool_call_count = tool_calls.len(),
+            input_tokens,
+            output_tokens,
+            "Claude SSE stream complete"
+        );
 
         let usage = TokenUsage {
             input_tokens,

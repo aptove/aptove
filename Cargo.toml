@@ -2,11 +2,11 @@
 members = [
     "agent-core",
     "agent-cli",
-    "agent-provider-claude",
-    "agent-provider-gemini",
-    "agent-provider-openai",
-    "agent-mcp-bridge",
-    "agent-storage-fs",
+    "plugins/agent-provider-claude",
+    "plugins/agent-provider-gemini",
+    "plugins/agent-provider-openai",
+    "plugins/agent-mcp-bridge",
+    "plugins/agent-storage-fs",
 ]
 resolver = "2"
 
@@ -19,11 +19,11 @@ version = "0.1.0"
 [workspace.dependencies]
 # Internal crates
 agent-core = { path = "agent-core" }
-agent-storage-fs = { path = "agent-storage-fs" }
-agent-provider-claude = { path = "agent-provider-claude" }
-agent-provider-gemini = { path = "agent-provider-gemini" }
-agent-provider-openai = { path = "agent-provider-openai" }
-agent-mcp-bridge = { path = "agent-mcp-bridge" }
+agent-storage-fs = { path = "plugins/agent-storage-fs" }
+agent-provider-claude = { path = "plugins/agent-provider-claude" }
+agent-provider-gemini = { path = "plugins/agent-provider-gemini" }
+agent-provider-openai = { path = "plugins/agent-provider-openai" }
+agent-mcp-bridge = { path = "plugins/agent-mcp-bridge" }
 
 # ACP Protocol types
 agent-client-protocol-schema = "0.10"
