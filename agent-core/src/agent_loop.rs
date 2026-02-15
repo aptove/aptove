@@ -15,9 +15,10 @@ use agent_client_protocol_schema::{
 };
 
 use crate::plugin::{
-    LlmProvider, Message, MessageContent, Role, StopReason, StreamCallback,
+    LlmProvider, Message, MessageContent, OutputChunk, Role, StopReason, StreamCallback,
     StreamEvent, ToolCallRequest, ToolCallResult, ToolDefinition, TokenUsage,
 };
+use crate::plugin::PluginHost;
 use crate::transport::TransportSender;
 
 // Note: Provider is passed as Arc<dyn LlmProvider> — no RwLock needed
@@ -80,6 +81,7 @@ pub async fn run_agent_loop(
     cancel_token: CancellationToken,
     transport: Option<TransportSender>,
     session_id: &str,
+    plugin_host: Option<&PluginHost>,
 ) -> Result<AgentLoopResult> {
     let mut all_messages: Vec<Message> = messages.to_vec();
     let mut new_messages: Vec<Message> = Vec::new();
@@ -143,9 +145,23 @@ pub async fn run_agent_loop(
 
         // Handle text content
         if !response.content.is_empty() {
+            let mut final_text = response.content.clone();
+
+            // Run on_output_chunk hook
+            if let Some(host) = plugin_host {
+                let mut chunk = OutputChunk {
+                    text: final_text.clone(),
+                    is_final: response.tool_calls.is_empty(),
+                };
+                if let Err(e) = host.run_output_chunk(&mut chunk).await {
+                    warn!(session_id, err = %e, "on_output_chunk hook error");
+                }
+                final_text = chunk.text;
+            }
+
             let msg = Message {
                 role: Role::Assistant,
-                content: MessageContent::Text(response.content.clone()),
+                content: MessageContent::Text(final_text),
             };
             all_messages.push(msg.clone());
             new_messages.push(msg);
@@ -174,6 +190,15 @@ pub async fn run_agent_loop(
 
         // Execute each tool call
         for call in &response.tool_calls {
+            let mut call = call.clone();
+
+            // Run on_before_tool_call hook
+            if let Some(host) = plugin_host {
+                if let Err(e) = host.run_before_tool_call(&mut call).await {
+                    warn!(session_id, tool = %call.name, err = %e, "on_before_tool_call hook error");
+                }
+            }
+
             debug!(
                 session_id,
                 tool = %call.name,
@@ -198,7 +223,7 @@ pub async fn run_agent_loop(
                     .await;
             }
 
-            let result = if let Some(ref executor) = tool_executor {
+            let mut result = if let Some(ref executor) = tool_executor {
                 executor(call.clone()).await
             } else {
                 // No tool executor available
@@ -208,6 +233,13 @@ pub async fn run_agent_loop(
                     is_error: true,
                 }
             };
+
+            // Run on_after_tool_call hook
+            if let Some(host) = plugin_host {
+                if let Err(e) = host.run_after_tool_call(&call, &mut result).await {
+                    warn!(session_id, tool = %call.name, err = %e, "on_after_tool_call hook error");
+                }
+            }
 
             // Emit tool_call_update notification with result
             if let Some(ref tx) = transport {
@@ -374,6 +406,7 @@ mod tests {
             CancellationToken::new(),
             None,
             "test-session",
+            None,
         )
         .await
         .unwrap();
@@ -431,6 +464,7 @@ mod tests {
             CancellationToken::new(),
             None,
             "test",
+            None,
         )
         .await
         .unwrap();

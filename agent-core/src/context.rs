@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::plugin::{Message, MessageContent, Role};
+use crate::plugin::{Message, MessageContent, PluginHost, Role};
 
 // ---------------------------------------------------------------------------
 // Context display info
@@ -177,6 +177,77 @@ impl ContextWindow {
             );
         }
         removed
+    }
+
+    /// Compact with plugin strategy override. If a plugin provides
+    /// replacement messages via `on_context_compact`, those are used
+    /// instead of the default drop-oldest strategy.
+    pub async fn compact_with_plugins(&mut self, plugin_host: &PluginHost) -> usize {
+        let target = (self.max_tokens as f64 * self.compact_target) as usize;
+
+        if self.total_tokens <= target {
+            return 0;
+        }
+
+        // Collect the non-system messages that would be dropped
+        let droppable: Vec<Message> = self
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .cloned()
+            .collect();
+
+        // Ask plugins for a replacement
+        match plugin_host.run_context_compact(&droppable, target).await {
+            Ok(Some(replacement)) => {
+                // Plugin provided replacement messages — rebuild context
+                // Keep system messages, then insert replacements
+                let system_msgs: Vec<_> = self
+                    .messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.role == Role::System)
+                    .map(|(i, m)| (m.clone(), self.token_counts[i]))
+                    .collect();
+
+                let old_count = self.messages.len();
+                self.messages.clear();
+                self.token_counts.clear();
+                self.total_tokens = 0;
+
+                // Re-add system messages
+                for (msg, tokens) in &system_msgs {
+                    self.messages.push(msg.clone());
+                    self.token_counts.push(*tokens);
+                    self.total_tokens += tokens;
+                }
+
+                // Add plugin-provided replacements
+                for msg in &replacement {
+                    let tokens = self.count_message(msg);
+                    self.messages.push(msg.clone());
+                    self.token_counts.push(tokens);
+                    self.total_tokens += tokens;
+                }
+
+                let removed = old_count.saturating_sub(self.messages.len());
+                tracing::info!(
+                    removed,
+                    replacement_count = replacement.len(),
+                    total_tokens = self.total_tokens,
+                    "compacted context via plugin strategy"
+                );
+                removed
+            }
+            Ok(None) => {
+                // No plugin override — fall back to default
+                self.compact()
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "on_context_compact hook error, falling back to default");
+                self.compact()
+            }
+        }
     }
 
     /// Check if a message of the given size would fit without exceeding the limit.

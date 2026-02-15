@@ -23,7 +23,7 @@ pub use builder::{AgentBuilder, AgentRuntime};
 pub use config::AgentConfig;
 pub use context::ContextWindow;
 pub use persistence::{SessionData, SessionStore};
-pub use plugin::{LlmProvider, LlmResponse, ModelInfo, Plugin, PluginHost, StopReason, TokenUsage};
+pub use plugin::{LlmProvider, LlmResponse, ModelInfo, OutputChunk, Plugin, PluginHost, StopReason, TokenUsage};
 pub use session::{Session, SessionManager};
 pub use transport::StdioTransport;
 pub use workspace::{WorkspaceManager, WorkspaceMetadata, WorkspaceStore, WorkspaceSummary};

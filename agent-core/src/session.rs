@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::context::ContextWindow;
-use crate::plugin::{Message, Role, MessageContent};
+use crate::plugin::{Message, Role, MessageContent, PluginHost};
 
 // ---------------------------------------------------------------------------
 // Session
@@ -146,6 +146,27 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         sessions.insert(id.clone(), Arc::new(Mutex::new(session)));
         id
+    }
+
+    /// Create a new session, running `on_session_start` hooks on all
+    /// registered plugins before storing it.
+    pub async fn create_session_with_plugins(
+        &self,
+        max_tokens: usize,
+        provider: &str,
+        model: &str,
+        plugin_host: &PluginHost,
+    ) -> anyhow::Result<SessionId> {
+        let mut session = Session::new(max_tokens, provider, model);
+        let id = session.id.clone();
+        tracing::info!(session_id = %id, "created session (with plugin hooks)");
+
+        // Run on_session_start hooks
+        plugin_host.run_session_start(&mut session).await?;
+
+        let mut sessions = self.sessions.write().await;
+        sessions.insert(id.clone(), Arc::new(Mutex::new(session)));
+        Ok(id)
     }
 
     /// Get a session by id.

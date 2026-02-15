@@ -651,6 +651,7 @@ async fn handle_session_prompt(
         cancel_token,
         Some(sender.clone()),
         &session_id,
+        None, // TODO: pass PluginHost once wired into runtime
     )
     .await;
 
@@ -890,6 +891,7 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
             cancel_token,
             None, // no transport sender — chat mode prints directly
             "chat",
+            None, // TODO: pass PluginHost once wired into runtime
         )
         .await;
 
