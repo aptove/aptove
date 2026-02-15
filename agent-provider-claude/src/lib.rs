@@ -5,7 +5,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tracing::debug;
+use futures::StreamExt;
+use tracing::{debug, warn};
 
 use agent_core::plugin::{
     LlmProvider, LlmResponse, Message, MessageContent, ModelInfo, Role, StopReason,
@@ -146,7 +147,7 @@ impl LlmProvider for ClaudeProvider {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/v1/messages", self.base_url);
 
-        debug!(model = %self.model, url = %url, "calling Claude API");
+        debug!(model = %self.model, url = %url, "calling Claude API (streaming)");
 
         let response = self
             .client
@@ -165,95 +166,199 @@ impl LlmProvider for ClaudeProvider {
             anyhow::bail!("Claude API error (HTTP {}): {}", status, body);
         }
 
-        // TODO: Parse SSE stream properly. For now, read full response.
-        // In production, this should parse `event: content_block_delta` etc.
-        let body_text = response.text().await?;
+        // Parse SSE stream from Anthropic Messages API
+        let mut full_text = String::new();
+        let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        let mut stop_reason = StopReason::EndTurn;
+        let mut input_tokens: usize = 0;
+        let mut output_tokens: usize = 0;
 
-        // Parse non-streaming response as fallback
-        // (Streaming SSE parsing to be implemented with proper event-stream handling)
-        let parsed: serde_json::Value = serde_json::from_str(&body_text)
-            .context("failed to parse Claude response")?;
+        // Track in-progress tool call inputs (index → partial JSON string)
+        let mut tool_input_buffers: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+        // Track tool call metadata (index → (id, name))
+        let mut tool_meta: std::collections::HashMap<usize, (String, String)> =
+            std::collections::HashMap::new();
 
-        let content = parsed
-            .get("content")
-            .and_then(|c| c.as_array())
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter_map(|b| {
-                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                        } else {
-                            None
+        let mut stream = response.bytes_stream();
+        let mut line_buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("error reading Claude stream chunk")?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            line_buffer.push_str(&chunk_str);
+
+            // Process complete lines from buffer
+            while let Some(newline_pos) = line_buffer.find('\n') {
+                let line = line_buffer[..newline_pos].trim_end_matches('\r').to_string();
+                line_buffer = line_buffer[newline_pos + 1..].to_string();
+
+                // SSE format: lines starting with "data: " contain JSON
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        continue;
+                    }
+                    let event: serde_json::Value = match serde_json::from_str(data) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!("failed to parse SSE data: {} — line: {}", e, data);
+                            continue;
                         }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
+                    };
 
-        let tool_calls: Vec<ToolCallRequest> = parsed
-            .get("content")
-            .and_then(|c| c.as_array())
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter_map(|b| {
-                        if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                            Some(ToolCallRequest {
-                                id: b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                name: b
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                arguments: b.get("input").cloned().unwrap_or_default(),
-                            })
-                        } else {
-                            None
+                    let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                    match event_type {
+                        "message_start" => {
+                            // Extract input token count from message.usage
+                            if let Some(usage) = event
+                                .get("message")
+                                .and_then(|m| m.get("usage"))
+                            {
+                                input_tokens = usage
+                                    .get("input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as usize;
+                            }
                         }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let stop_reason = match parsed
-            .get("stop_reason")
-            .and_then(|s| s.as_str())
-        {
-            Some("end_turn") => StopReason::EndTurn,
-            Some("tool_use") => StopReason::ToolUse,
-            Some("max_tokens") => StopReason::MaxTokens,
-            Some("stop_sequence") => StopReason::StopSequence,
-            _ => StopReason::EndTurn,
-        };
-
-        let usage = TokenUsage {
-            input_tokens: parsed
-                .get("usage")
-                .and_then(|u| u.get("input_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            output_tokens: parsed
-                .get("usage")
-                .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            total_tokens: 0, // computed below
-            estimated_cost_usd: 0.0, // TODO: cost estimation
-        };
-
-        let mut usage = usage;
-        usage.total_tokens = usage.input_tokens + usage.output_tokens;
-
-        if let Some(cb) = &stream_cb {
-            if !content.is_empty() {
-                cb(StreamEvent::TextDelta(content.clone()));
+                        "content_block_start" => {
+                            let index = event
+                                .get("index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            if let Some(block) = event.get("content_block") {
+                                let block_type =
+                                    block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                if block_type == "tool_use" {
+                                    let id = block
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let name = block
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    // Emit tool call start via stream callback
+                                    if let Some(ref cb) = stream_cb {
+                                        cb(StreamEvent::ToolCallStart {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                        });
+                                    }
+                                    tool_meta.insert(index, (id, name));
+                                    tool_input_buffers.insert(index, String::new());
+                                }
+                            }
+                        }
+                        "content_block_delta" => {
+                            let index = event
+                                .get("index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            if let Some(delta) = event.get("delta") {
+                                let delta_type =
+                                    delta.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                match delta_type {
+                                    "text_delta" => {
+                                        if let Some(text) =
+                                            delta.get("text").and_then(|t| t.as_str())
+                                        {
+                                            full_text.push_str(text);
+                                            if let Some(ref cb) = stream_cb {
+                                                cb(StreamEvent::TextDelta(text.to_string()));
+                                            }
+                                        }
+                                    }
+                                    "input_json_delta" => {
+                                        if let Some(partial) =
+                                            delta.get("partial_json").and_then(|t| t.as_str())
+                                        {
+                                            if let Some(buf) = tool_input_buffers.get_mut(&index) {
+                                                buf.push_str(partial);
+                                            }
+                                            // Emit tool call argument delta
+                                            if let Some((ref id, _)) = tool_meta.get(&index) {
+                                                if let Some(ref cb) = stream_cb {
+                                                    cb(StreamEvent::ToolCallDelta {
+                                                        id: id.clone(),
+                                                        arguments_delta: partial.to_string(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        "content_block_stop" => {
+                            let index = event
+                                .get("index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            // Finalize tool call if this was a tool_use block
+                            if let Some((id, name)) = tool_meta.remove(&index) {
+                                let input_json = tool_input_buffers.remove(&index).unwrap_or_default();
+                                let arguments: serde_json::Value =
+                                    serde_json::from_str(&input_json).unwrap_or_default();
+                                tool_calls.push(ToolCallRequest {
+                                    id,
+                                    name,
+                                    arguments,
+                                });
+                            }
+                        }
+                        "message_delta" => {
+                            // Extract stop_reason and output token count
+                            if let Some(delta) = event.get("delta") {
+                                stop_reason = match delta
+                                    .get("stop_reason")
+                                    .and_then(|s| s.as_str())
+                                {
+                                    Some("end_turn") => StopReason::EndTurn,
+                                    Some("tool_use") => StopReason::ToolUse,
+                                    Some("max_tokens") => StopReason::MaxTokens,
+                                    Some("stop_sequence") => StopReason::StopSequence,
+                                    _ => StopReason::EndTurn,
+                                };
+                            }
+                            if let Some(usage) = event.get("usage") {
+                                output_tokens = usage
+                                    .get("output_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as usize;
+                            }
+                        }
+                        "message_stop" | "ping" => {
+                            // No action needed
+                        }
+                        "error" => {
+                            let err_msg = event
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("unknown error");
+                            anyhow::bail!("Claude streaming error: {}", err_msg);
+                        }
+                        _ => {
+                            debug!(event_type, "unhandled Claude SSE event type");
+                        }
+                    }
+                }
             }
         }
 
+        let usage = TokenUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            estimated_cost_usd: 0.0,
+        };
+
         Ok(LlmResponse {
-            content,
+            content: full_text,
             tool_calls,
             stop_reason,
             usage,
