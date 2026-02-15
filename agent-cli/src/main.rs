@@ -441,8 +441,6 @@ async fn handle_session_new(
     state: &AgentState,
 ) -> Result<()> {
     let runtime = state.runtime.read().await;
-    let provider_name = runtime.active_provider_name().to_string();
-    let model = state.config.model_for_provider(&provider_name);
 
     // Extract optional device_id for workspace resolution
     let device_id = params
@@ -461,6 +459,32 @@ async fn handle_session_new(
     };
 
     info!(workspace = %workspace.uuid, device_id, "resolved workspace for session");
+
+    // Load workspace-specific config overlay (if any)
+    let ws_config = match runtime.workspace_manager().load_workspace_config(&workspace.uuid).await {
+        Ok(Some(ws_toml)) => {
+            match config::merge_toml_configs(
+                &toml::to_string(&state.config)?,
+                &ws_toml,
+            ) {
+                Ok(merged) => {
+                    info!(workspace = %workspace.uuid, provider = %merged.provider, "using workspace config overlay");
+                    merged
+                }
+                Err(e) => {
+                    tracing::warn!(workspace = %workspace.uuid, err = %e, "failed to merge workspace config, using global");
+                    state.config.clone()
+                }
+            }
+        }
+        _ => state.config.clone(),
+    };
+
+    // Use workspace config (or global fallback) for provider/model resolution
+    let provider_name = workspace.provider.as_deref()
+        .unwrap_or(ws_config.provider.as_str())
+        .to_string();
+    let model = ws_config.model_for_provider(&provider_name);
 
     // Load persisted session
     let session_data = runtime
@@ -496,8 +520,7 @@ async fn handle_session_new(
 
         // System prompt
         let sys_prompt_mgr = SystemPromptManager::new(
-            state
-                .config
+            ws_config
                 .system_prompt
                 .default
                 .as_deref()
@@ -702,25 +725,85 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
     }
 
     let runtime = build_runtime(config.clone()).await?;
-    let model = config.model_for_provider(&config.provider);
+    let provider_name = runtime.active_provider_name().to_string();
+    let model = config.model_for_provider(&provider_name);
 
     // Load default workspace
     let workspace = runtime.workspace_manager().default().await?;
 
+    // Set up MCP bridge for tools
+    let mcp_bridge = setup_mcp_bridge(&config).await?;
+    let tools: Vec<agent_core::plugin::ToolDefinition> = match &mcp_bridge {
+        Some(b) => b.lock().await.all_tools(),
+        None => Vec::new(),
+    };
+
+    // Build tool executor from MCP bridge
+    let tool_executor: Option<agent_core::agent_loop::ToolExecutor> = mcp_bridge.as_ref().map(|bridge| {
+        let bridge = bridge.clone();
+        Arc::new(move |req: ToolCallRequest| {
+            let bridge = bridge.clone();
+            Box::pin(async move {
+                let b = bridge.lock().await;
+                b.execute_tool(req).await
+            }) as futures::future::BoxFuture<'static, ToolCallResult>
+        }) as agent_core::agent_loop::ToolExecutor
+    });
+
+    // Load persisted session
+    let session_data = runtime
+        .workspace_manager()
+        .session_store()
+        .read(&workspace.uuid)
+        .await
+        .unwrap_or_else(|_| agent_core::persistence::SessionData::new(&provider_name, &model));
+
+    // Build initial context (system prompt + persisted messages)
+    let sys_prompt_mgr = SystemPromptManager::new(
+        config
+            .system_prompt
+            .default
+            .as_deref()
+            .unwrap_or(DEFAULT_SYSTEM_PROMPT),
+        &std::env::current_dir().unwrap_or_default(),
+    );
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    let vars = SystemPromptManager::default_variables(&provider_name, &model, &tool_names);
+    let sys_msg = sys_prompt_mgr.build_message(None, &vars);
+
+    let mut messages: Vec<Message> = vec![sys_msg];
+    for msg in &session_data.messages {
+        messages.push(msg.clone());
+    }
+
+    let restored_count = session_data.messages.len();
+
     eprintln!("🤖 Aptove v0.1.0");
     eprintln!(
         "   Provider: {} | Model: {}",
-        config.provider, model
+        provider_name, model
     );
-    eprintln!("   Workspace: {}", workspace.uuid);
+    eprintln!("   Workspace: {} ({})", workspace.name.as_deref().unwrap_or("default"), workspace.uuid);
+    if !tools.is_empty() {
+        eprintln!("   Tools: {} available", tools.len());
+    }
+    if restored_count > 0 {
+        eprintln!("   Session: {} messages restored", restored_count);
+    }
     eprintln!("   Type /help for commands, /quit to exit\n");
+
+    let provider = runtime.active_provider()
+        .context("no active LLM provider")?;
+    let loop_config = AgentLoopConfig {
+        max_iterations: config.agent.max_tool_iterations,
+    };
 
     let stdin = tokio::io::stdin();
     let reader = tokio::io::BufReader::new(stdin);
     let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
 
     loop {
-        eprint!("> ");
+        eprint!("{}> ", provider_name);
         let line = match lines.next_line().await? {
             Some(l) => l.trim().to_string(),
             None => break,
@@ -739,10 +822,8 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                 }
                 "/help" | "/h" => {
                     eprintln!("Available commands:");
-                    eprintln!("  /clear      - Clear context window");
+                    eprintln!("  /clear      - Clear conversation and session.md");
                     eprintln!("  /context    - Show context window status");
-                    eprintln!("  /model      - Show/switch model");
-                    eprintln!("  /provider   - Show/switch provider");
                     eprintln!("  /workspace  - Show current workspace");
                     eprintln!("  /help       - Show this help");
                     eprintln!("  /quit       - Exit");
@@ -753,12 +834,26 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                         workspace.name.as_deref().unwrap_or("unnamed"),
                         workspace.uuid
                     );
+                    eprintln!("   Provider: {} | Model: {}", provider_name, model);
+                    eprintln!("   Messages: {}", messages.len() - 1); // exclude system prompt
                 }
                 "/clear" => {
-                    eprintln!("🧹 Context cleared.");
+                    // Clear persisted session.md
+                    if let Err(e) = runtime
+                        .workspace_manager()
+                        .session_store()
+                        .clear(&workspace.uuid)
+                        .await
+                    {
+                        eprintln!("⚠ Failed to clear session file: {}", e);
+                    }
+                    // Reset in-memory messages to just the system prompt
+                    messages.truncate(1);
+                    eprintln!("🧹 Conversation cleared (session.md reset).");
                 }
                 "/context" => {
-                    eprintln!("📊 Context: (no active session in standalone chat mode yet)");
+                    let msg_count = messages.len() - 1; // exclude system prompt
+                    eprintln!("📊 Context: {} messages ({} user + assistant turns)", msg_count, msg_count / 2);
                 }
                 _ => {
                     eprintln!(
@@ -770,10 +865,87 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
             continue;
         }
 
-        // Regular prompt
-        eprintln!("💭 (Chat mode prompt handling coming soon — use ACP mode with bridge for full functionality)");
+        // Add user message
+        let user_msg = Message {
+            role: Role::User,
+            content: MessageContent::Text(line.clone()),
+        };
+        messages.push(user_msg.clone());
+
+        // Persist user message
+        let _ = runtime
+            .workspace_manager()
+            .session_store()
+            .append(&workspace.uuid, &user_msg)
+            .await;
+
+        // Run agent loop
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let result = agent_core::agent_loop::run_agent_loop(
+            provider.clone(),
+            &messages,
+            &tools,
+            tool_executor.clone(),
+            &loop_config,
+            cancel_token,
+            None, // no transport sender — chat mode prints directly
+            "chat",
+        )
+        .await;
+
+        match result {
+            Ok(loop_result) => {
+                // Print and persist assistant messages
+                for msg in &loop_result.new_messages {
+                    match &msg.content {
+                        MessageContent::Text(text) => {
+                            if msg.role == Role::Assistant {
+                                eprintln!("\n{}\n", text);
+                            }
+                        }
+                        MessageContent::ToolCalls(calls) => {
+                            for call in calls {
+                                eprintln!("🔧 Tool: {} → {}", call.name, call.id);
+                            }
+                        }
+                        MessageContent::ToolResult(result) => {
+                            let preview = if result.content.len() > 200 {
+                                format!("{}…", &result.content[..200])
+                            } else {
+                                result.content.clone()
+                            };
+                            eprintln!("   ↳ {}", preview);
+                        }
+                    }
+
+                    // Add to in-memory context
+                    messages.push(msg.clone());
+
+                    // Persist to session.md (SessionStore skips non-text messages)
+                    let _ = runtime
+                        .workspace_manager()
+                        .session_store()
+                        .append(&workspace.uuid, msg)
+                        .await;
+                }
+
+                // Show token usage
+                if loop_result.total_usage.input_tokens > 0 || loop_result.total_usage.output_tokens > 0 {
+                    eprintln!(
+                        "   [{} in / {} out tokens]",
+                        loop_result.total_usage.input_tokens,
+                        loop_result.total_usage.output_tokens
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Error: {:#}", e);
+            }
+        }
     }
 
+    // Shutdown plugins
+    runtime.shutdown_plugins().await?;
     Ok(())
 }
 

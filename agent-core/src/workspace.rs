@@ -79,6 +79,10 @@ pub trait WorkspaceStore: Send + Sync {
 
     /// Garbage-collect stale workspaces. Returns count removed.
     async fn gc(&self, max_age_days: u64) -> Result<u64>;
+
+    /// Load the per-workspace config override as a TOML string.
+    /// Returns `None` if no workspace-level config exists.
+    async fn load_config(&self, uuid: &str) -> Result<Option<String>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +181,12 @@ impl WorkspaceManager {
     /// Garbage-collect stale workspaces.
     pub async fn gc(&self, max_age_days: u64) -> Result<u64> {
         self.workspace_store.gc(max_age_days).await
+    }
+
+    /// Load the workspace-specific config override as a TOML string.
+    /// Returns `None` if no per-workspace config exists.
+    pub async fn load_workspace_config(&self, uuid: &str) -> Result<Option<String>> {
+        self.workspace_store.load_config(uuid).await
     }
 
     /// Access the workspace store.
@@ -278,6 +288,10 @@ mod tests {
 
         async fn gc(&self, _max_age_days: u64) -> Result<u64> {
             Ok(0)
+        }
+
+        async fn load_config(&self, _uuid: &str) -> Result<Option<String>> {
+            Ok(None)
         }
     }
 

@@ -20,6 +20,7 @@ agent-provider-openai.workspace = true
 agent-mcp-bridge.workspace = true
 clap.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

@@ -292,6 +292,7 @@ mod tests {
         async fn delete(&self, _: &str) -> Result<()> { Ok(()) }
         async fn update_accessed(&self, _: &str) -> Result<()> { Ok(()) }
         async fn gc(&self, _: u64) -> Result<u64> { Ok(0) }
+        async fn load_config(&self, _: &str) -> Result<Option<String>> { Ok(None) }
     }
 
     struct MockSS;

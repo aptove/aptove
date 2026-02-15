@@ -199,6 +199,18 @@ impl WorkspaceStore for FsWorkspaceStore {
         Ok(())
     }
 
+    async fn load_config(&self, uuid: &str) -> Result<Option<String>> {
+        let config_path = self.workspace_dir(uuid).join("config.toml");
+        if config_path.exists() {
+            let content = tokio::fs::read_to_string(&config_path)
+                .await
+                .with_context(|| format!("failed to read workspace config: {}", config_path.display()))?;
+            Ok(Some(content))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn gc(&self, max_age_days: u64) -> Result<u64> {
         let cutoff = Utc::now() - Duration::days(max_age_days as i64);
         let mut removed = 0u64;
