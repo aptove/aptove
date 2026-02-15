@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "agent-core",
+    "agent-cli",
+    "agent-provider-claude",
+    "agent-provider-gemini",
+    "agent-provider-openai",
+    "agent-mcp-bridge",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+# Internal crates
+agent-core = { path = "agent-core" }
+
+# ACP Protocol types
+agent-client-protocol-schema = "0.10"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async patterns
+async-trait = "0.1"
+futures = "0.3"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Directories
+dirs = "5"
+
+# Tokio utilities
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Command lookup
+which = "7"
+
+# HTTP client (for providers)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Test utilities
+tempfile = "3"
