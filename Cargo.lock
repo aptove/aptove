@@ -6,15 +6,26 @@ version = 4
 name = "agent-cli"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol-schema",
  "agent-core",
+ "agent-mcp-bridge",
+ "agent-provider-claude",
+ "agent-provider-gemini",
+ "agent-provider-openai",
+ "agent-storage-fs",
  "anyhow",
+ "async-trait",
+ "chrono",
  "clap",
  "dirs",
+ "futures",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "which",
 ]
 
 [[package]]
@@ -112,6 +123,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "agent-storage-fs"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

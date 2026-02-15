@@ -1,22 +1,38 @@
 //! Aptove Agent CLI
 //!
-//! Binary entry point. Provides two modes:
+//! Binary entry point. Provides multiple modes:
 //! - `run` (default): ACP stdio mode for use with bridge or ACP clients
 //! - `chat`: Interactive REPL with slash commands
+//! - `workspace`: Workspace management commands
+//! - `config`: Configuration management
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+use agent_core::agent_loop::{AgentLoopConfig, ToolExecutor};
 use agent_core::config::{self, AgentConfig};
-use agent_core::plugin::PluginHost;
+use agent_core::plugin::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult};
 use agent_core::session::SessionManager;
 use agent_core::system_prompt::{SystemPromptManager, DEFAULT_SYSTEM_PROMPT};
-use agent_core::transport::{IncomingMessage, StdioTransport, TransportSender};
+use agent_core::transport::{IncomingMessage, JsonRpcId, StdioTransport, TransportSender};
+use agent_core::{AgentBuilder, AgentRuntime};
+
+use agent_client_protocol_schema::{
+    AgentCapabilities, ContentBlock, Implementation, InitializeResponse, NewSessionResponse,
+    PromptRequest, PromptResponse, ProtocolVersion, StopReason as AcpStopReason,
+};
+
+use agent_mcp_bridge::McpBridge;
+use agent_provider_claude::ClaudeProvider;
+use agent_provider_gemini::GeminiProvider;
+use agent_provider_openai::OpenAiProvider;
+use agent_storage_fs::{FsBindingStore, FsSessionStore, FsWorkspaceStore};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -25,9 +41,13 @@ use agent_core::transport::{IncomingMessage, StdioTransport, TransportSender};
 #[derive(Parser)]
 #[command(name = "aptove", version = "0.1.0", about = "Aptove — ACP AI Coding Agent")]
 struct Cli {
-    /// Path to config file (default: ~/.config/Aptove/config.toml)
+    /// Path to config file
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+
+    /// Target workspace UUID (default: auto-detect via device binding)
+    #[arg(long, global = true)]
+    workspace: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -39,10 +59,43 @@ enum Commands {
     Run,
     /// Interactive REPL chat mode
     Chat,
+    /// Workspace management
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
     /// Configuration management
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// List all workspaces
+    List,
+    /// Create a new workspace
+    Create {
+        /// Optional workspace name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Delete a workspace
+    Delete {
+        /// Workspace UUID
+        uuid: String,
+    },
+    /// Show workspace details
+    Show {
+        /// Workspace UUID
+        uuid: String,
+    },
+    /// Garbage-collect stale workspaces
+    Gc {
+        /// Maximum age in days (default: 90)
+        #[arg(long, default_value = "90")]
+        max_age: u64,
     },
 }
 
@@ -59,21 +112,37 @@ enum ConfigAction {
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // All logging goes to stderr (stdout is for JSON-RPC)
+async fn main() {
+    // All logging goes to stderr (stdout is for JSON-RPC).
+    // Disable ANSI color codes when stderr is not a real terminal
+    // (e.g. when captured by the bridge) to avoid raw \x1b[…] in logs.
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(is_tty)
         .with_writer(std::io::stderr)
         .init();
 
+    if let Err(e) = run().await {
+        // Print the full error chain for clear diagnostics
+        eprintln!("❌ Aptove fatal error: {}", e);
+        for cause in e.chain().skip(1) {
+            eprintln!("   caused by: {}", cause);
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Load config
     let agent_config = if let Some(ref path) = cli.config {
-        AgentConfig::load_from(path)?
+        AgentConfig::load_from(path)
+            .map_err(|e| anyhow::anyhow!("failed to load config from '{}': {}", path.display(), e))?
     } else {
         AgentConfig::load_default()?
     };
@@ -81,8 +150,124 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_acp_mode(agent_config).await,
         Commands::Chat => run_chat_mode(agent_config).await,
+        Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
         Commands::Config { action } => run_config_command(action, agent_config),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime construction
+// ---------------------------------------------------------------------------
+
+async fn build_runtime(config: AgentConfig) -> Result<AgentRuntime> {
+    let data_dir = AgentConfig::data_dir()
+        .context("failed to determine data directory")?;
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("failed to create data directory: {}", data_dir.display()))?;
+
+    info!(data_dir = %data_dir.display(), "using data directory");
+
+    let mut builder = AgentBuilder::new(config.clone());
+    let mut registered_providers: Vec<String> = Vec::new();
+
+    // -- Register LLM providers based on config --
+    if let Some(api_key) = config.resolve_api_key("claude") {
+        let model = config.model_for_provider("claude");
+        let base_url = config
+            .providers
+            .claude
+            .as_ref()
+            .and_then(|p| p.base_url.as_deref());
+        info!(model = %model, "registering Claude provider");
+        builder = builder.with_llm(Arc::new(ClaudeProvider::new(&api_key, &model, base_url)));
+        registered_providers.push("claude".to_string());
+    }
+    if let Some(api_key) = config.resolve_api_key("gemini") {
+        let model = config.model_for_provider("gemini");
+        info!(model = %model, "registering Gemini provider");
+        builder = builder.with_llm(Arc::new(GeminiProvider::new(&api_key, &model)));
+        registered_providers.push("gemini".to_string());
+    }
+    if let Some(api_key) = config.resolve_api_key("openai") {
+        let model = config.model_for_provider("openai");
+        let base_url = config
+            .providers
+            .openai
+            .as_ref()
+            .and_then(|p| p.base_url.as_deref());
+        info!(model = %model, "registering OpenAI provider");
+        builder = builder.with_llm(Arc::new(OpenAiProvider::new(&api_key, &model, base_url)));
+        registered_providers.push("openai".to_string());
+    }
+
+    if registered_providers.is_empty() {
+        anyhow::bail!(
+            "no LLM providers could be registered — no API keys found.\n\
+             Set one of these environment variables:\n\
+             • ANTHROPIC_API_KEY  (for Claude)\n\
+             • GOOGLE_API_KEY    (for Gemini)\n\
+             • OPENAI_API_KEY    (for OpenAI)\n\
+             Or add api_key under [providers.<name>] in config.toml.\n\
+             Config location: {}",
+            AgentConfig::default_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "unknown".into())
+        );
+    }
+
+    info!(providers = ?registered_providers, active = %config.provider, "LLM providers registered");
+
+    // Set active provider from config
+    if !registered_providers.contains(&config.provider) {
+        anyhow::bail!(
+            "active provider '{}' has no API key configured.\n\
+             Registered providers: [{}].\n\
+             Either set the API key for '{}' or change the active provider in config.toml.",
+            config.provider,
+            registered_providers.join(", "),
+            config.provider,
+        );
+    }
+    builder = builder.with_active_provider(&config.provider);
+
+    // -- Register storage backends --
+    let ws_store = Arc::new(FsWorkspaceStore::new(&data_dir)
+        .context("failed to initialize workspace store")?);
+    let session_store = Arc::new(FsSessionStore::new(&data_dir)
+        .context("failed to initialize session store")?);
+    let binding_store = Arc::new(FsBindingStore::new_sync(&data_dir)
+        .context("failed to initialize binding store")?);
+
+    builder = builder
+        .with_workspace_store(ws_store)
+        .with_session_store(session_store)
+        .with_binding_store(binding_store);
+
+    builder.build()
+        .context("failed to build agent runtime")
+}
+
+// ---------------------------------------------------------------------------
+// MCP Bridge setup
+// ---------------------------------------------------------------------------
+
+async fn setup_mcp_bridge(
+    config: &AgentConfig,
+) -> Result<Option<Arc<tokio::sync::Mutex<McpBridge>>>> {
+    // Filter to only servers whose command actually exists on PATH.
+    // validate() already warned the user about missing ones.
+    let available: Vec<_> = config
+        .mcp_servers
+        .iter()
+        .filter(|s| which::which(&s.command).is_ok())
+        .cloned()
+        .collect();
+
+    if available.is_empty() {
+        return Ok(None);
+    }
+
+    let mut bridge = McpBridge::new();
+    bridge.connect_all(&available).await?;
+    Ok(Some(Arc::new(tokio::sync::Mutex::new(bridge))))
 }
 
 // ---------------------------------------------------------------------------
@@ -92,249 +277,401 @@ async fn main() -> Result<()> {
 async fn run_acp_mode(config: AgentConfig) -> Result<()> {
     info!(provider = %config.provider, "starting Aptove in ACP mode");
 
-    let plugin_host = setup_plugins(&config)?;
+    // Validate config — provide clear error on failure.
+    // Note: validate() checks that the active provider has an API key.
+    // If no config file was found (defaults used), this will fail because
+    // defaults have no API keys. The error message tells the user what to do.
+    match config.validate() {
+        Ok(warnings) => {
+            for w in &warnings {
+                tracing::warn!("⚠️  {}", w);
+            }
+        }
+        Err(e) => {
+            error!("configuration validation failed: {:#}", e);
+            anyhow::bail!("{}", e);
+        }
+    }
+
+    // Build runtime — this can fail if no providers/storage available
+    let mut runtime = build_runtime(config.clone()).await
+        .context("failed to initialize agent runtime")?;
+
+    info!("agent runtime initialized successfully");
+
+    // Set up MCP bridge (once — used for both tool registration and state)
+    let mcp_bridge = match setup_mcp_bridge(&config).await {
+        Ok(Some(bridge)) => {
+            let b = bridge.lock().await;
+            let tool_count = b.all_tools().len();
+            runtime.register_tools(b.all_tools());
+            info!(tool_count, "MCP bridge connected, tools registered");
+            drop(b);
+            Some(bridge)
+        }
+        Ok(None) => {
+            info!("no MCP servers configured");
+            None
+        }
+        Err(e) => {
+            // MCP bridge failure is non-fatal — agent works without tools
+            error!(err = %e, "failed to set up MCP bridge (continuing without tools)");
+            None
+        }
+    };
+
     let session_manager = SessionManager::new();
     let mut transport = StdioTransport::new();
     let sender = transport.sender();
 
     let state = Arc::new(AgentState {
         config: config.clone(),
-        plugin_host: RwLock::new(plugin_host),
+        runtime: RwLock::new(runtime),
         session_manager,
+        session_workspaces: RwLock::new(HashMap::new()),
+        mcp_bridge,
         sender,
     });
+
+    info!("ready to accept ACP requests");
 
     // Message dispatch loop
     while let Some(msg) = transport.recv().await {
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_message(msg, &state).await {
+                // Log the full error chain
                 error!(err = %e, "error handling message");
+                for cause in e.chain().skip(1) {
+                    error!("  caused by: {}", cause);
+                }
             }
         });
     }
 
     info!("ACP transport closed, shutting down");
-    state.plugin_host.read().await.shutdown_all().await?;
+    state.runtime.read().await.shutdown_plugins().await?;
     Ok(())
 }
 
 /// Shared state for message handling.
 struct AgentState {
     config: AgentConfig,
-    plugin_host: RwLock<PluginHost>,
+    runtime: RwLock<AgentRuntime>,
     session_manager: SessionManager,
+    /// Maps session_id → workspace_uuid for persistence.
+    session_workspaces: RwLock<HashMap<String, String>>,
+    mcp_bridge: Option<Arc<tokio::sync::Mutex<McpBridge>>>,
     sender: TransportSender,
 }
+
+// ---------------------------------------------------------------------------
+// Message dispatch
+// ---------------------------------------------------------------------------
 
 async fn handle_message(msg: IncomingMessage, state: &AgentState) -> Result<()> {
     match msg {
         IncomingMessage::Request { id, method, params } => {
-            match method.as_str() {
-                "initialize" => {
-                    let model = state.config.model_for_provider(&state.config.provider);
-                    let has_tools = !state.config.mcp_servers.is_empty();
-
-                    let result = serde_json::json!({
-                        "agent_info": {
-                            "name": "Aptove",
-                            "version": "0.1.0"
-                        },
-                        "protocol_version": "2025-07-09",
-                        "capabilities": {
-                            "sessions": {},
-                            "tools": if has_tools { serde_json::json!({}) } else { serde_json::Value::Null },
-                        },
-                        "instructions": format!(
-                            "Aptove agent using {} provider with model {}",
-                            state.config.provider, model
-                        )
-                    });
-                    state.sender.send_response(id, result).await?;
-                }
-                "session/new" => {
-                    let provider_name = &state.config.provider;
-                    let model = state.config.model_for_provider(provider_name);
-
-                    // Get max tokens from the active provider
-                    let max_tokens = {
-                        let host = state.plugin_host.read().await;
-                        match host.active_provider() {
-                            Ok(p) => p.read().await.model_info().max_context_tokens,
-                            Err(_) => 200_000, // fallback
-                        }
-                    };
-
-                    let session_id = state
-                        .session_manager
-                        .create_session(max_tokens, provider_name, &model)
-                        .await;
-
-                    // Inject system prompt
-                    let session_arc = state.session_manager.get_session(&session_id).await?;
-                    {
-                        let mut session = session_arc.lock().await;
-                        let sys_prompt_mgr = SystemPromptManager::new(
-                            state.config.system_prompt.default.as_deref()
-                                .unwrap_or(DEFAULT_SYSTEM_PROMPT),
-                            &std::env::current_dir().unwrap_or_default(),
-                        );
-                        let tools: Vec<String> = state.plugin_host.read().await
-                            .tools()
-                            .iter()
-                            .map(|t| t.name.clone())
-                            .collect();
-                        let vars = SystemPromptManager::default_variables(
-                            provider_name, &model, &tools,
-                        );
-                        let sys_msg = sys_prompt_mgr.build_message(None, &vars);
-                        session.context.add_message(sys_msg);
-                    }
-
-                    let result = serde_json::json!({ "id": session_id });
-                    state.sender.send_response(id, result).await?;
-                }
-                "session/prompt" => {
-                    let session_id = params
-                        .as_ref()
-                        .and_then(|p| p.get("id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let prompt_text = params
-                        .as_ref()
-                        .and_then(|p| p.get("prompt"))
-                        .and_then(|p| p.get("content"))
-                        .and_then(|c| {
-                            // Handle both string and array content
-                            if let Some(s) = c.as_str() {
-                                Some(s.to_string())
-                            } else if let Some(arr) = c.as_array() {
-                                arr.iter()
-                                    .filter_map(|item| {
-                                        item.get("text").and_then(|t| t.as_str())
-                                    })
-                                    .next()
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-
-                    let sender = state.sender.clone();
-                    let session_arc = state.session_manager.get_session(&session_id).await?;
-
-                    // Add user message
-                    {
-                        let mut session = session_arc.lock().await;
-                        session.add_user_message(&prompt_text);
-                        session.reset_cancel();
-                        session.is_busy = true;
-                    }
-
-                    // Run the agent loop
-                    let provider = state.plugin_host.read().await.active_provider()?;
-                    let tools = state.plugin_host.read().await.tools().to_vec();
-                    let cancel_token = {
-                        let session = session_arc.lock().await;
-                        session.cancel_token.clone()
-                    };
-                    let messages = {
-                        let session = session_arc.lock().await;
-                        session.context.messages().to_vec()
-                    };
-
-                    let loop_config = agent_core::agent_loop::AgentLoopConfig {
-                        max_iterations: state.config.agent.max_tool_iterations,
-                    };
-
-                    let result = agent_core::agent_loop::run_agent_loop(
-                        provider,
-                        &messages,
-                        &tools,
-                        None, // TODO: wire up MCP tool executor
-                        &loop_config,
-                        cancel_token,
-                        Some(sender.clone()),
-                        &session_id,
-                    )
-                    .await;
-
-                    // Update session with new messages
-                    match result {
-                        Ok(loop_result) => {
-                            {
-                                let mut session = session_arc.lock().await;
-                                for msg in &loop_result.new_messages {
-                                    session.context.add_message(msg.clone());
-                                }
-                                session.is_busy = false;
-                            }
-
-                            let stop_reason = match loop_result.stop_reason {
-                                agent_core::StopReason::EndTurn => "end_turn",
-                                agent_core::StopReason::ToolUse => "tool_use",
-                                agent_core::StopReason::MaxTokens => "max_tokens",
-                                agent_core::StopReason::StopSequence => "stop_sequence",
-                                agent_core::StopReason::Error => "error",
-                            };
-
-                            let response = serde_json::json!({
-                                "id": session_id,
-                                "stop_reason": stop_reason,
-                                "usage": {
-                                    "input_tokens": loop_result.total_usage.input_tokens,
-                                    "output_tokens": loop_result.total_usage.output_tokens,
-                                    "total_tokens": loop_result.total_usage.total_tokens,
-                                }
-                            });
-                            sender.send_response(id, response).await?;
-                        }
-                        Err(e) => {
-                            let mut session = session_arc.lock().await;
-                            session.is_busy = false;
-                            sender
-                                .send_error(
-                                    id,
-                                    agent_core::transport::error_codes::INTERNAL_ERROR,
-                                    e.to_string(),
-                                )
-                                .await?;
-                        }
-                    }
-                }
+            let result = match method.as_str() {
+                "initialize" => handle_initialize(id.clone(), state).await,
+                "session/new" => handle_session_new(id.clone(), &params, state).await,
+                "session/prompt" => handle_session_prompt(id.clone(), &params, state).await,
                 _ => {
-                    state
+                    return state
                         .sender
                         .send_error(
                             id,
                             agent_core::transport::error_codes::METHOD_NOT_FOUND,
                             format!("method not found: {}", method),
                         )
-                        .await?;
+                        .await;
                 }
+            };
+
+            // If a request handler returned an error, send it back as a
+            // JSON-RPC error response so the client knows what happened
+            if let Err(ref e) = result {
+                let error_msg = format!("{:#}", e); // full error chain
+                error!(method = %method, err = %error_msg, "request handler failed");
+                let _ = state
+                    .sender
+                    .send_error(
+                        id,
+                        agent_core::transport::error_codes::INTERNAL_ERROR,
+                        error_msg,
+                    )
+                    .await;
             }
+            result
         }
         IncomingMessage::Notification { method, params } => {
-            match method.as_str() {
-                "session/cancel" => {
-                    if let Some(session_id) = params
-                        .as_ref()
-                        .and_then(|p| p.get("id"))
-                        .and_then(|v| v.as_str())
-                    {
-                        let _ = state.session_manager.cancel_session(session_id).await;
-                    }
+            if method == "session/cancel" {
+                if let Some(session_id) = params
+                    .as_ref()
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let _ = state.session_manager.cancel_session(session_id).await;
                 }
-                _ => {
-                    tracing::debug!(method = %method, "unhandled notification");
-                }
+            } else {
+                tracing::debug!(method = %method, "unhandled notification");
             }
+            Ok(())
         }
     }
-    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ACP request handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_initialize(id: JsonRpcId, state: &AgentState) -> Result<()> {
+    let response = InitializeResponse::new(ProtocolVersion::LATEST)
+        .agent_info(Implementation::new("Aptove", "0.1.0"))
+        .agent_capabilities(AgentCapabilities::default());
+
+    let result = serde_json::to_value(&response)
+        .context("failed to serialize initialize response")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_session_new(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let runtime = state.runtime.read().await;
+    let provider_name = runtime.active_provider_name().to_string();
+    let model = state.config.model_for_provider(&provider_name);
+
+    // Extract optional device_id for workspace resolution
+    let device_id = params
+        .as_ref()
+        .and_then(|p| p.get("device_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+
+    // Resolve workspace
+    let workspace = if device_id == "default" {
+        runtime.workspace_manager().default().await
+            .context("failed to load default workspace")?
+    } else {
+        runtime.workspace_manager().resolve(device_id).await
+            .with_context(|| format!("failed to resolve workspace for device '{}'", device_id))?
+    };
+
+    info!(workspace = %workspace.uuid, device_id, "resolved workspace for session");
+
+    // Load persisted session
+    let session_data = runtime
+        .workspace_manager()
+        .session_store()
+        .read(&workspace.uuid)
+        .await
+        .unwrap_or_else(|_| agent_core::persistence::SessionData::new(&provider_name, &model));
+
+    // Get max tokens from provider
+    let max_tokens = match runtime.active_provider() {
+        Ok(p) => p.model_info().max_context_tokens,
+        Err(_) => 200_000,
+    };
+
+    // Create in-memory session
+    let session_id = state
+        .session_manager
+        .create_session(max_tokens, &provider_name, &model)
+        .await;
+
+    // Track session → workspace mapping
+    state
+        .session_workspaces
+        .write()
+        .await
+        .insert(session_id.clone(), workspace.uuid.clone());
+
+    // Inject system prompt and persisted messages
+    let session_arc = state.session_manager.get_session(&session_id).await?;
+    {
+        let mut session = session_arc.lock().await;
+
+        // System prompt
+        let sys_prompt_mgr = SystemPromptManager::new(
+            state
+                .config
+                .system_prompt
+                .default
+                .as_deref()
+                .unwrap_or(DEFAULT_SYSTEM_PROMPT),
+            &std::env::current_dir().unwrap_or_default(),
+        );
+        let tools: Vec<String> = runtime.tools().iter().map(|t| t.name.clone()).collect();
+        let vars = SystemPromptManager::default_variables(&provider_name, &model, &tools);
+        let sys_msg = sys_prompt_mgr.build_message(None, &vars);
+        session.context.add_message(sys_msg);
+
+        // Restore persisted messages
+        for msg in &session_data.messages {
+            session.context.add_message(msg.clone());
+        }
+    }
+
+    let result = serde_json::to_value(&NewSessionResponse::new(session_id))
+        .context("failed to serialize session/new response")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_session_prompt(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    // Parse the ACP PromptRequest using the official SDK type
+    let prompt_req: PromptRequest = params
+        .as_ref()
+        .map(|p| serde_json::from_value::<PromptRequest>(p.clone()))
+        .transpose()
+        .context("failed to parse session/prompt request")?
+        .context("session/prompt requires parameters")?;
+
+    let session_id = prompt_req.session_id.0.to_string();
+
+    // Extract text from the prompt content blocks
+    let prompt_text = prompt_req
+        .prompt
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(tc) => Some(tc.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Lookup workspace for this session
+    let workspace_uuid = state
+        .session_workspaces
+        .read()
+        .await
+        .get(&session_id)
+        .cloned();
+
+    let sender = state.sender.clone();
+    let session_arc = state.session_manager.get_session(&session_id).await
+        .with_context(|| format!("session '{}' not found", session_id))?;
+
+    // Add user message
+    {
+        let mut session = session_arc.lock().await;
+        session.add_user_message(&prompt_text);
+        session.reset_cancel();
+        session.is_busy = true;
+    }
+
+    // Persist user message
+    if let Some(ref ws_uuid) = workspace_uuid {
+        let runtime = state.runtime.read().await;
+        let user_msg = Message {
+            role: Role::User,
+            content: MessageContent::Text(prompt_text.clone()),
+        };
+        let _ = runtime
+            .workspace_manager()
+            .session_store()
+            .append(ws_uuid, &user_msg)
+            .await;
+    }
+
+    // Get provider, tools, cancel token
+    let runtime = state.runtime.read().await;
+    let provider = runtime.active_provider()
+        .context("no active LLM provider available")?;
+    let tools = runtime.tools().to_vec();
+    let cancel_token = {
+        let session = session_arc.lock().await;
+        session.cancel_token.clone()
+    };
+    let messages = {
+        let session = session_arc.lock().await;
+        session.context.messages().to_vec()
+    };
+    let loop_config = AgentLoopConfig {
+        max_iterations: state.config.agent.max_tool_iterations,
+    };
+
+    // Build tool executor from MCP bridge
+    let tool_executor: Option<ToolExecutor> = state.mcp_bridge.as_ref().map(|bridge| {
+        let bridge = bridge.clone();
+        Arc::new(move |req: ToolCallRequest| {
+            let bridge = bridge.clone();
+            Box::pin(async move {
+                let b = bridge.lock().await;
+                b.execute_tool(req).await
+            }) as futures::future::BoxFuture<'static, ToolCallResult>
+        }) as ToolExecutor
+    });
+
+    // Drop the runtime read lock before the long-running loop
+    drop(runtime);
+
+    // Run agent loop
+    let result = agent_core::agent_loop::run_agent_loop(
+        provider,
+        &messages,
+        &tools,
+        tool_executor,
+        &loop_config,
+        cancel_token,
+        Some(sender.clone()),
+        &session_id,
+    )
+    .await;
+
+    match result {
+        Ok(loop_result) => {
+            // Update in-memory session
+            {
+                let mut session = session_arc.lock().await;
+                for msg in &loop_result.new_messages {
+                    session.context.add_message(msg.clone());
+                }
+                session.is_busy = false;
+            }
+
+            // Persist assistant messages (only text messages via SessionStore)
+            if let Some(ref ws_uuid) = workspace_uuid {
+                let runtime = state.runtime.read().await;
+                for msg in &loop_result.new_messages {
+                    let _ = runtime
+                        .workspace_manager()
+                        .session_store()
+                        .append(ws_uuid, msg)
+                        .await;
+                }
+            }
+
+            let acp_stop_reason = match loop_result.stop_reason {
+                agent_core::StopReason::EndTurn => AcpStopReason::EndTurn,
+                agent_core::StopReason::ToolUse => AcpStopReason::EndTurn,
+                agent_core::StopReason::MaxTokens => AcpStopReason::MaxTokens,
+                agent_core::StopReason::StopSequence => AcpStopReason::EndTurn,
+                agent_core::StopReason::Error => AcpStopReason::Cancelled,
+            };
+
+            let response = serde_json::to_value(&PromptResponse::new(acp_stop_reason))
+                .context("failed to serialize session/prompt response")?;
+            sender.send_response(id, response).await
+        }
+        Err(e) => {
+            let mut session = session_arc.lock().await;
+            session.is_busy = false;
+            sender
+                .send_error(
+                    id,
+                    agent_core::transport::error_codes::INTERNAL_ERROR,
+                    e.to_string(),
+                )
+                .await
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,9 +695,18 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
         }
     }
 
+    let runtime = build_runtime(config.clone()).await?;
     let model = config.model_for_provider(&config.provider);
+
+    // Load default workspace
+    let workspace = runtime.workspace_manager().default().await?;
+
     eprintln!("🤖 Aptove v0.1.0");
-    eprintln!("   Provider: {} | Model: {}", config.provider, model);
+    eprintln!(
+        "   Provider: {} | Model: {}",
+        config.provider, model
+    );
+    eprintln!("   Workspace: {}", workspace.uuid);
     eprintln!("   Type /help for commands, /quit to exit\n");
 
     let stdin = tokio::io::stdin();
@@ -387,14 +733,20 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                 }
                 "/help" | "/h" => {
                     eprintln!("Available commands:");
-                    eprintln!("  /clear     - Clear context window");
-                    eprintln!("  /context   - Show context window status");
-                    eprintln!("  /model     - Show/switch model");
-                    eprintln!("  /provider  - Show/switch provider");
-                    eprintln!("  /usage     - Show session token usage");
-                    eprintln!("  /sessions  - List saved sessions");
-                    eprintln!("  /help      - Show this help");
-                    eprintln!("  /quit      - Exit");
+                    eprintln!("  /clear      - Clear context window");
+                    eprintln!("  /context    - Show context window status");
+                    eprintln!("  /model      - Show/switch model");
+                    eprintln!("  /provider   - Show/switch provider");
+                    eprintln!("  /workspace  - Show current workspace");
+                    eprintln!("  /help       - Show this help");
+                    eprintln!("  /quit       - Exit");
+                }
+                "/workspace" => {
+                    eprintln!(
+                        "📁 Workspace: {} ({})",
+                        workspace.name.as_deref().unwrap_or("unnamed"),
+                        workspace.uuid
+                    );
                 }
                 "/clear" => {
                     eprintln!("🧹 Context cleared.");
@@ -403,14 +755,90 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                     eprintln!("📊 Context: (no active session in standalone chat mode yet)");
                 }
                 _ => {
-                    eprintln!("Unknown command: {}. Type /help for available commands.", line);
+                    eprintln!(
+                        "Unknown command: {}. Type /help for available commands.",
+                        line
+                    );
                 }
             }
             continue;
         }
 
-        // Regular prompt — TODO: wire up to agent loop
+        // Regular prompt
         eprintln!("💭 (Chat mode prompt handling coming soon — use ACP mode with bridge for full functionality)");
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Workspace commands
+// ---------------------------------------------------------------------------
+
+async fn run_workspace_command(action: WorkspaceAction, config: AgentConfig) -> Result<()> {
+    let runtime = build_runtime(config).await?;
+    let wm = runtime.workspace_manager();
+
+    match action {
+        WorkspaceAction::List => {
+            let workspaces = wm.list().await?;
+            if workspaces.is_empty() {
+                println!("No workspaces found.");
+            } else {
+                println!(
+                    "{:<38} {:<20} {:<24} {}",
+                    "UUID", "NAME", "LAST ACCESSED", "PROVIDER"
+                );
+                println!("{}", "-".repeat(100));
+                for ws in workspaces {
+                    println!(
+                        "{:<38} {:<20} {:<24} {}",
+                        ws.uuid,
+                        ws.name.as_deref().unwrap_or("-"),
+                        ws.last_accessed.format("%Y-%m-%d %H:%M:%S"),
+                        ws.provider.as_deref().unwrap_or("-"),
+                    );
+                }
+            }
+        }
+        WorkspaceAction::Create { name } => {
+            let ws = wm.create(name.as_deref(), None).await?;
+            println!("✅ Created workspace: {}", ws.uuid);
+            if let Some(ref name) = ws.name {
+                println!("   Name: {}", name);
+            }
+        }
+        WorkspaceAction::Delete { uuid } => {
+            wm.delete(&uuid).await?;
+            println!("🗑  Deleted workspace: {}", uuid);
+        }
+        WorkspaceAction::Show { uuid } => {
+            let ws = wm.load(&uuid).await?;
+            println!("Workspace: {}", ws.uuid);
+            println!(
+                "  Name:          {}",
+                ws.name.as_deref().unwrap_or("-")
+            );
+            println!(
+                "  Provider:      {}",
+                ws.provider.as_deref().unwrap_or("-")
+            );
+            println!(
+                "  Created:       {}",
+                ws.created_at.format("%Y-%m-%d %H:%M:%S")
+            );
+            println!(
+                "  Last Accessed: {}",
+                ws.last_accessed.format("%Y-%m-%d %H:%M:%S")
+            );
+        }
+        WorkspaceAction::Gc { max_age } => {
+            let removed = wm.gc(max_age).await?;
+            println!(
+                "🧹 Removed {} stale workspace(s) (older than {} days)",
+                removed, max_age
+            );
+        }
     }
 
     Ok(())
@@ -442,19 +870,4 @@ fn run_config_command(action: ConfigAction, config: AgentConfig) -> Result<()> {
         }
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Plugin setup
-// ---------------------------------------------------------------------------
-
-fn setup_plugins(_config: &AgentConfig) -> Result<PluginHost> {
-    let host = PluginHost::new();
-
-    // TODO: Register providers based on config
-    // if config.resolve_api_key("claude").is_some() {
-    //     host.register_provider(Box::new(claude::ClaudeProvider::new(...)));
-    // }
-
-    Ok(host)
 }

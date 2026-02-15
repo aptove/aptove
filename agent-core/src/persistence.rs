@@ -1,160 +1,240 @@
 //! Session Persistence
 //!
-//! Save and load sessions to/from disk as JSON files.
-//! Default location: `~/.local/share/Aptove/sessions/`.
+//! Workspace-scoped session storage. Each workspace has a single `session.md`
+//! file that stores the persistent conversation as structured markdown with
+//! YAML-like frontmatter.
+//!
+//! The `SessionStore` trait defines the operations; filesystem implementation
+//! lives in `agent-storage-fs`.
 
-use std::path::{Path, PathBuf};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
 
-use crate::plugin::{Message, TokenUsage};
-use crate::session::{SessionId, SessionMode, SessionSummary};
+use crate::plugin::{Message, MessageContent, Role};
 
 // ---------------------------------------------------------------------------
-// Serializable session state
+// Data types
 // ---------------------------------------------------------------------------
 
-/// Complete session state for persistence.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PersistedSession {
-    pub id: SessionId,
-    pub created_at: DateTime<Utc>,
-    pub mode: SessionMode,
+/// Metadata stored in the session.md frontmatter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionFrontmatter {
     pub provider: String,
     pub model: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Complete session data: frontmatter + messages.
+#[derive(Debug, Clone)]
+pub struct SessionData {
+    pub frontmatter: SessionFrontmatter,
     pub messages: Vec<Message>,
-    pub total_usage: TokenUsage,
+}
+
+impl SessionData {
+    /// Create an empty session with the given provider and model.
+    pub fn new(provider: &str, model: &str) -> Self {
+        Self {
+            frontmatter: SessionFrontmatter {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                created_at: Utc::now(),
+            },
+            messages: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Session store trait
+// SessionStore trait
 // ---------------------------------------------------------------------------
 
-/// Trait for session persistence backends.
-#[async_trait::async_trait]
+/// Workspace-scoped session persistence.
+///
+/// All operations are keyed by workspace UUID. Each workspace has exactly
+/// one session (the persistent conversation).
+#[async_trait]
 pub trait SessionStore: Send + Sync {
-    /// Save a session to the store.
-    async fn save(&self, session: &PersistedSession) -> Result<()>;
+    /// Read the full session for a workspace.
+    async fn read(&self, workspace_id: &str) -> Result<SessionData>;
 
-    /// Load a session by id.
-    async fn load(&self, id: &str) -> Result<PersistedSession>;
+    /// Append a single message to the session. Only persists text messages
+    /// (user, assistant, system). Tool calls and results are ephemeral.
+    async fn append(&self, workspace_id: &str, message: &Message) -> Result<()>;
 
-    /// List all saved session summaries.
-    async fn list(&self) -> Result<Vec<SessionSummary>>;
+    /// Write the full session (overwrites existing).
+    async fn write(&self, workspace_id: &str, data: &SessionData) -> Result<()>;
 
-    /// Delete a session by id.
-    async fn delete(&self, id: &str) -> Result<()>;
+    /// Clear the session (reset to empty frontmatter).
+    async fn clear(&self, workspace_id: &str) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
-// File-based session store
+// session.md format: serialization
 // ---------------------------------------------------------------------------
 
-/// Stores sessions as JSON files in a directory.
-pub struct FileSessionStore {
-    dir: PathBuf,
+/// Serialize a full session to `session.md` format.
+pub fn serialize_session(data: &SessionData) -> String {
+    let mut out = String::new();
+
+    // Frontmatter
+    out.push_str("---\n");
+    out.push_str(&format!("provider: {}\n", data.frontmatter.provider));
+    out.push_str(&format!("model: {}\n", data.frontmatter.model));
+    out.push_str(&format!(
+        "created_at: {}\n",
+        data.frontmatter.created_at.to_rfc3339()
+    ));
+    out.push_str("---\n\n");
+
+    // Messages (only text messages are persisted)
+    for msg in &data.messages {
+        if let Some(s) = serialize_message(msg) {
+            out.push_str(&s);
+        }
+    }
+
+    out
 }
 
-impl FileSessionStore {
-    /// Create a new file session store.
-    /// Creates the directory if it doesn't exist.
-    pub fn new(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("failed to create session dir: {}", dir.display()))?;
-        Ok(Self {
-            dir: dir.to_path_buf(),
-        })
-    }
+/// Serialize a single message. Returns `None` for non-text messages
+/// (tool calls, tool results) which are ephemeral.
+pub fn serialize_message(msg: &Message) -> Option<String> {
+    let role_header = match msg.role {
+        Role::System => "## System",
+        Role::User => "## User",
+        Role::Assistant => "## Assistant",
+        Role::Tool => return None, // Tool results are ephemeral
+    };
 
-    /// Create a store at the default location:
-    /// `~/.local/share/Aptove/sessions/`
-    pub fn default_location() -> Result<Self> {
-        let base = dirs::data_local_dir()
-            .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))?;
-        let dir = base.join("Aptove").join("sessions");
-        Self::new(&dir)
-    }
-
-    fn session_path(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{}.json", id))
+    match &msg.content {
+        MessageContent::Text(t) if !t.is_empty() => {
+            Some(format!("{}\n\n{}\n\n", role_header, t))
+        }
+        _ => None, // Skip tool calls and empty text
     }
 }
 
-#[async_trait::async_trait]
-impl SessionStore for FileSessionStore {
-    async fn save(&self, session: &PersistedSession) -> Result<()> {
-        let path = self.session_path(&session.id);
-        let json = serde_json::to_string_pretty(session)
-            .context("failed to serialize session")?;
+// ---------------------------------------------------------------------------
+// session.md format: parsing
+// ---------------------------------------------------------------------------
 
-        tokio::fs::write(&path, json)
-            .await
-            .with_context(|| format!("failed to write session file: {}", path.display()))?;
+/// Parse a `session.md` file into `SessionData`.
+pub fn parse_session(content: &str) -> Result<SessionData> {
+    let content = content.trim();
 
-        debug!(session_id = %session.id, path = %path.display(), "saved session");
-        Ok(())
+    if content.is_empty() {
+        return Ok(SessionData::new("unknown", "unknown"));
     }
 
-    async fn load(&self, id: &str) -> Result<PersistedSession> {
-        let path = self.session_path(id);
-        let json = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("failed to read session file: {}", path.display()))?;
+    // Parse frontmatter
+    let (frontmatter, body) = if content.starts_with("---") {
+        let after_first = &content[3..];
+        if let Some(end) = after_first.find("\n---") {
+            let fm_text = after_first[..end].trim();
+            let body = after_first[end + 4..].trim();
+            (parse_frontmatter(fm_text), body.to_string())
+        } else {
+            (default_frontmatter(), content.to_string())
+        }
+    } else {
+        (default_frontmatter(), content.to_string())
+    };
 
-        let session: PersistedSession = serde_json::from_str(&json)
-            .with_context(|| format!("failed to parse session file: {}", path.display()))?;
+    let messages = parse_messages(&body);
 
-        info!(session_id = %id, "loaded session");
-        Ok(session)
+    Ok(SessionData {
+        frontmatter,
+        messages,
+    })
+}
+
+fn default_frontmatter() -> SessionFrontmatter {
+    SessionFrontmatter {
+        provider: "unknown".to_string(),
+        model: "unknown".to_string(),
+        created_at: Utc::now(),
     }
+}
 
-    async fn list(&self) -> Result<Vec<SessionSummary>> {
-        let mut summaries = Vec::new();
-        let mut entries = tokio::fs::read_dir(&self.dir).await?;
+fn parse_frontmatter(text: &str) -> SessionFrontmatter {
+    let mut provider = "unknown".to_string();
+    let mut model = "unknown".to_string();
+    let mut created_at = Utc::now();
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-
-            match tokio::fs::read_to_string(&path).await {
-                Ok(json) => match serde_json::from_str::<PersistedSession>(&json) {
-                    Ok(session) => {
-                        summaries.push(SessionSummary {
-                            id: session.id,
-                            created_at: session.created_at,
-                            message_count: session.messages.len(),
-                            provider: session.provider,
-                            model: session.model,
-                            mode: session.mode,
-                        });
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "provider" => provider = value.to_string(),
+                "model" => model = value.to_string(),
+                "created_at" => {
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+                        created_at = dt.with_timezone(&Utc);
                     }
-                    Err(e) => {
-                        warn!(path = %path.display(), err = %e, "skipping corrupt session file");
-                    }
-                },
-                Err(e) => {
-                    warn!(path = %path.display(), err = %e, "failed to read session file");
                 }
+                _ => {}
             }
         }
-
-        // Sort by creation date, newest first
-        summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        Ok(summaries)
     }
 
-    async fn delete(&self, id: &str) -> Result<()> {
-        let path = self.session_path(id);
-        tokio::fs::remove_file(&path)
-            .await
-            .with_context(|| format!("failed to delete session: {}", path.display()))?;
-        info!(session_id = %id, "deleted session");
-        Ok(())
+    SessionFrontmatter {
+        provider,
+        model,
+        created_at,
+    }
+}
+
+fn parse_messages(body: &str) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut current_role: Option<Role> = None;
+    let mut current_content = String::new();
+
+    for line in body.lines() {
+        if let Some(role) = parse_role_header(line) {
+            // Save previous message
+            if let Some(prev_role) = current_role.take() {
+                let text = current_content.trim().to_string();
+                if !text.is_empty() {
+                    messages.push(Message {
+                        role: prev_role,
+                        content: MessageContent::Text(text),
+                    });
+                }
+            }
+            current_role = Some(role);
+            current_content.clear();
+        } else {
+            current_content.push_str(line);
+            current_content.push('\n');
+        }
+    }
+
+    // Last message
+    if let Some(role) = current_role {
+        let text = current_content.trim().to_string();
+        if !text.is_empty() {
+            messages.push(Message {
+                role,
+                content: MessageContent::Text(text),
+            });
+        }
+    }
+
+    messages
+}
+
+fn parse_role_header(line: &str) -> Option<Role> {
+    match line.trim() {
+        "## System" => Some(Role::System),
+        "## User" => Some(Role::User),
+        "## Assistant" => Some(Role::Assistant),
+        "## Tool" => Some(Role::Tool),
+        _ => None,
     }
 }
 
@@ -165,58 +245,146 @@ impl SessionStore for FileSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::TokenUsage;
 
-    fn make_test_session(id: &str) -> PersistedSession {
-        PersistedSession {
-            id: id.to_string(),
-            created_at: Utc::now(),
-            mode: SessionMode::Coding,
-            provider: "claude".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            messages: vec![],
-            total_usage: TokenUsage::default(),
+    fn text_msg(role: Role, text: &str) -> Message {
+        Message {
+            role,
+            content: MessageContent::Text(text.to_string()),
         }
     }
 
-    #[tokio::test]
-    async fn save_and_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileSessionStore::new(dir.path()).unwrap();
-        let session = make_test_session("test-1");
-
-        store.save(&session).await.unwrap();
-        let loaded = store.load("test-1").await.unwrap();
-        assert_eq!(loaded.id, "test-1");
-        assert_eq!(loaded.provider, "claude");
+    #[test]
+    fn serialize_empty_session() {
+        let data = SessionData::new("claude", "sonnet");
+        let md = serialize_session(&data);
+        assert!(md.starts_with("---\n"));
+        assert!(md.contains("provider: claude"));
+        assert!(md.contains("model: sonnet"));
     }
 
-    #[tokio::test]
-    async fn list_sessions() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileSessionStore::new(dir.path()).unwrap();
+    #[test]
+    fn serialize_with_messages() {
+        let mut data = SessionData::new("claude", "sonnet");
+        data.messages.push(text_msg(Role::User, "Hello!"));
+        data.messages.push(text_msg(Role::Assistant, "Hi there."));
 
-        store.save(&make_test_session("s1")).await.unwrap();
-        store.save(&make_test_session("s2")).await.unwrap();
-
-        let summaries = store.list().await.unwrap();
-        assert_eq!(summaries.len(), 2);
+        let md = serialize_session(&data);
+        assert!(md.contains("## User\n\nHello!"));
+        assert!(md.contains("## Assistant\n\nHi there."));
     }
 
-    #[tokio::test]
-    async fn load_missing_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileSessionStore::new(dir.path()).unwrap();
-        assert!(store.load("nonexistent").await.is_err());
+    #[test]
+    fn serialize_skips_tool_messages() {
+        use crate::plugin::{ToolCallRequest, ToolCallResult};
+
+        let mut data = SessionData::new("claude", "sonnet");
+        data.messages.push(text_msg(Role::User, "Run ls"));
+        data.messages.push(Message {
+            role: Role::Assistant,
+            content: MessageContent::ToolCalls(vec![ToolCallRequest {
+                id: "tc1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({}),
+            }]),
+        });
+        data.messages.push(Message {
+            role: Role::Tool,
+            content: MessageContent::ToolResult(ToolCallResult {
+                tool_call_id: "tc1".into(),
+                content: "file1.rs".into(),
+                is_error: false,
+            }),
+        });
+        data.messages
+            .push(text_msg(Role::Assistant, "Here are the files."));
+
+        let md = serialize_session(&data);
+        assert!(md.contains("## User\n\nRun ls"));
+        assert!(md.contains("## Assistant\n\nHere are the files."));
+        // Tool call and result not serialized
+        assert!(!md.contains("bash"));
+        assert!(!md.contains("file1.rs"));
     }
 
-    #[tokio::test]
-    async fn delete_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileSessionStore::new(dir.path()).unwrap();
+    #[test]
+    fn parse_round_trip() {
+        let mut data = SessionData::new("gemini", "2.5-pro");
+        data.messages.push(text_msg(Role::User, "What is 2+2?"));
+        data.messages
+            .push(text_msg(Role::Assistant, "The answer is 4."));
 
-        store.save(&make_test_session("to-delete")).await.unwrap();
-        store.delete("to-delete").await.unwrap();
-        assert!(store.load("to-delete").await.is_err());
+        let md = serialize_session(&data);
+        let parsed = parse_session(&md).unwrap();
+
+        assert_eq!(parsed.frontmatter.provider, "gemini");
+        assert_eq!(parsed.frontmatter.model, "2.5-pro");
+        assert_eq!(parsed.messages.len(), 2);
+
+        if let MessageContent::Text(ref t) = parsed.messages[0].content {
+            assert_eq!(t, "What is 2+2?");
+        } else {
+            panic!("expected text message");
+        }
+
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn parse_empty() {
+        let parsed = parse_session("").unwrap();
+        assert!(parsed.messages.is_empty());
+        assert_eq!(parsed.frontmatter.provider, "unknown");
+    }
+
+    #[test]
+    fn parse_frontmatter_only() {
+        let md = "---\nprovider: openai\nmodel: gpt-4o\n---\n";
+        let parsed = parse_session(md).unwrap();
+        assert_eq!(parsed.frontmatter.provider, "openai");
+        assert_eq!(parsed.frontmatter.model, "gpt-4o");
+        assert!(parsed.messages.is_empty());
+    }
+
+    #[test]
+    fn parse_multi_turn() {
+        let md = r#"---
+provider: claude
+model: sonnet
+created_at: 2026-02-15T10:30:00+00:00
+---
+
+## User
+
+Hello, how are you?
+
+## Assistant
+
+I'm doing well, thanks for asking!
+
+## User
+
+Can you help me fix a bug?
+
+## Assistant
+
+Of course! Please share the code.
+"#;
+
+        let parsed = parse_session(md).unwrap();
+        assert_eq!(parsed.frontmatter.provider, "claude");
+        assert_eq!(parsed.messages.len(), 4);
+        assert_eq!(parsed.messages[0].role, Role::User);
+        assert_eq!(parsed.messages[1].role, Role::Assistant);
+        assert_eq!(parsed.messages[2].role, Role::User);
+        assert_eq!(parsed.messages[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn parse_no_frontmatter() {
+        let md = "## User\n\nHello!\n\n## Assistant\n\nHi!\n";
+        let parsed = parse_session(md).unwrap();
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.frontmatter.provider, "unknown");
     }
 }

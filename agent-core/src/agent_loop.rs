@@ -9,11 +9,19 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use agent_client_protocol_schema::{
+    ContentBlock, ContentChunk, SessionNotification, SessionUpdate, TextContent, ToolCall,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+};
+
 use crate::plugin::{
     LlmProvider, Message, MessageContent, Role, StopReason, StreamCallback,
     StreamEvent, ToolCallRequest, ToolCallResult, ToolDefinition, TokenUsage,
 };
 use crate::transport::TransportSender;
+
+// Note: Provider is passed as Arc<dyn LlmProvider> — no RwLock needed
+// since the provider for a given execution is fixed.
 
 // ---------------------------------------------------------------------------
 // Tool executor callback
@@ -64,7 +72,7 @@ pub struct AgentLoopResult {
 /// tool calls, feeds results back, and repeats until the LLM signals
 /// completion or the iteration limit is reached.
 pub async fn run_agent_loop(
-    provider: Arc<tokio::sync::RwLock<Box<dyn LlmProvider>>>,
+    provider: Arc<dyn LlmProvider>,
     messages: &[Message],
     tools: &[ToolDefinition],
     tool_executor: Option<ToolExecutor>,
@@ -125,10 +133,7 @@ pub async fn run_agent_loop(
         });
 
         // Call the LLM
-        let response = {
-            let provider = provider.read().await;
-            provider.complete(&all_messages, tools, stream_cb).await?
-        };
+        let response = provider.complete(&all_messages, tools, stream_cb).await?;
 
         // Accumulate usage
         total_usage.input_tokens += response.usage.input_tokens;
@@ -178,17 +183,17 @@ pub async fn run_agent_loop(
 
             // Emit tool_call_start notification
             if let Some(ref tx) = transport {
+                let notification = SessionNotification::new(
+                    session_id.to_string(),
+                    SessionUpdate::ToolCall(
+                        ToolCall::new(call.id.to_string(), call.name.to_string())
+                            .status(ToolCallStatus::InProgress),
+                    ),
+                );
                 let _ = tx
                     .send_notification(
                         "session/update",
-                        serde_json::json!({
-                            "id": session_id,
-                            "update": {
-                                "kind": "tool_call_start",
-                                "tool_call_id": call.id,
-                                "tool_name": call.name,
-                            }
-                        }),
+                        serde_json::to_value(&notification).unwrap_or_default(),
                     )
                     .await;
             }
@@ -206,18 +211,28 @@ pub async fn run_agent_loop(
 
             // Emit tool_call_update notification with result
             if let Some(ref tx) = transport {
+                let status = if result.is_error {
+                    ToolCallStatus::Failed
+                } else {
+                    ToolCallStatus::Completed
+                };
+                let fields = ToolCallUpdateFields::new()
+                    .status(status)
+                    .content(vec![agent_client_protocol_schema::ToolCallContent::Content(
+                        agent_client_protocol_schema::Content::new(
+                            ContentBlock::Text(TextContent::new(&result.content)),
+                        ),
+                    )]);
+                let notification = SessionNotification::new(
+                    session_id.to_string(),
+                    SessionUpdate::ToolCallUpdate(
+                        ToolCallUpdate::new(result.tool_call_id.clone(), fields),
+                    ),
+                );
                 let _ = tx
                     .send_notification(
                         "session/update",
-                        serde_json::json!({
-                            "id": session_id,
-                            "update": {
-                                "kind": "tool_call_update",
-                                "tool_call_id": result.tool_call_id,
-                                "content": result.content,
-                                "is_error": result.is_error,
-                            }
-                        }),
+                        serde_json::to_value(&notification).unwrap_or_default(),
                     )
                     .await;
             }
@@ -252,49 +267,34 @@ async fn emit_stream_event(
     session_id: &str,
     event: &StreamEvent,
 ) -> Result<()> {
-    match event {
-        StreamEvent::TextDelta(text) => {
-            tx.send_notification(
-                "session/update",
-                serde_json::json!({
-                    "id": session_id,
-                    "update": {
-                        "kind": "agent_message_chunk",
-                        "content": text,
-                    }
-                }),
-            )
-            .await
-        }
-        StreamEvent::ToolCallStart { id, name } => {
-            tx.send_notification(
-                "session/update",
-                serde_json::json!({
-                    "id": session_id,
-                    "update": {
-                        "kind": "tool_call_start",
-                        "tool_call_id": id,
-                        "tool_name": name,
-                    }
-                }),
-            )
-            .await
-        }
+    let notification = match event {
+        StreamEvent::TextDelta(text) => SessionNotification::new(
+            session_id.to_string(),
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new(text),
+            ))),
+        ),
+        StreamEvent::ToolCallStart { id, name } => SessionNotification::new(
+            session_id.to_string(),
+            SessionUpdate::ToolCall(
+                ToolCall::new(id.to_string(), name.to_string()).status(ToolCallStatus::InProgress),
+            ),
+        ),
         StreamEvent::ToolCallDelta { id, arguments_delta } => {
-            tx.send_notification(
-                "session/update",
-                serde_json::json!({
-                    "id": session_id,
-                    "update": {
-                        "kind": "tool_call_update",
-                        "tool_call_id": id,
-                        "arguments_delta": arguments_delta,
-                    }
-                }),
+            let fields = ToolCallUpdateFields::new()
+                .raw_input(serde_json::json!({ "argumentsDelta": arguments_delta }));
+            SessionNotification::new(
+                session_id.to_string(),
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(id.to_string(), fields)),
             )
-            .await
         }
-    }
+    };
+
+    tx.send_notification(
+        "session/update",
+        serde_json::to_value(&notification).unwrap_or_default(),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_turn_no_tools() {
-        let provider = Arc::new(tokio::sync::RwLock::new(Box::new(MockProvider {
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockProvider {
             responses: std::sync::Mutex::new(vec![LlmResponse {
                 content: "Hello!".into(),
                 tool_calls: vec![],
@@ -357,8 +357,8 @@ mod tests {
                     total_tokens: 15,
                     estimated_cost_usd: 0.0,
                 },
-            }])
-        }) as Box<dyn LlmProvider>));
+            }]),
+        });
 
         let messages = vec![Message {
             role: Role::User,
@@ -418,9 +418,7 @@ mod tests {
             }
         }
 
-        let provider = Arc::new(tokio::sync::RwLock::new(
-            Box::new(AlwaysToolsProvider) as Box<dyn LlmProvider>
-        ));
+        let provider: Arc<dyn LlmProvider> = Arc::new(AlwaysToolsProvider);
 
         let config = AgentLoopConfig { max_iterations: 3 };
 

@@ -154,16 +154,48 @@ pub struct SystemPromptConfig {
 // ---------------------------------------------------------------------------
 
 impl AgentConfig {
-    /// Load config from the default location:
-    /// `~/.config/Aptove/config.toml`
+    /// Platform-specific data directory for Aptove.
+    ///
+    /// - macOS: `~/Library/Application Support/Aptove/`
+    /// - Linux: `~/.local/share/Aptove/`
+    /// - Windows: `%LOCALAPPDATA%\Aptove\`
+    pub fn data_dir() -> Result<PathBuf> {
+        let base = dirs::data_local_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not determine data directory"))?;
+        Ok(base.join("Aptove"))
+    }
+
+    /// Load config from the default location.
+    ///
+    /// Checks `<data_dir>/Aptove/config.toml` first, then falls back to
+    /// the legacy location `<config_dir>/Aptove/config.toml`.
     pub fn load_default() -> Result<Self> {
-        let path = Self::default_path()?;
-        if path.exists() {
-            Self::load_from(&path)
-        } else {
-            info!("no config file found at {}, using defaults", path.display());
-            Ok(Self::default())
+        // Try new data_dir location first
+        if let Ok(data_path) = Self::data_dir().map(|d| d.join("config.toml")) {
+            if data_path.exists() {
+                return Self::load_from(&data_path);
+            }
         }
+
+        // Fall back to legacy config_dir location
+        let legacy_path = Self::legacy_config_path()?;
+        if legacy_path.exists() {
+            info!("loading config from legacy location: {}", legacy_path.display());
+            return Self::load_from(&legacy_path);
+        }
+
+        let primary = Self::data_dir()
+            .map(|d| d.join("config.toml"))
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".into());
+        tracing::warn!(
+            "no config file found (searched {} and {}). \
+             Using defaults. Run `aptove config init` to create one, \
+             or set API key env vars (ANTHROPIC_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY).",
+            primary,
+            legacy_path.display(),
+        );
+        Ok(Self::default())
     }
 
     /// Load config from a specific path.
@@ -176,8 +208,27 @@ impl AgentConfig {
         Ok(config)
     }
 
-    /// Default config file path.
+    /// Load a global config and optionally merge with a workspace config overlay.
+    pub fn load_with_workspace(workspace_config_path: Option<&Path>) -> Result<Self> {
+        let base = Self::load_default()?;
+        if let Some(ws_path) = workspace_config_path {
+            if ws_path.exists() {
+                let base_str = toml::to_string(&base)?;
+                let ws_str = std::fs::read_to_string(ws_path)
+                    .with_context(|| format!("failed to read workspace config: {}", ws_path.display()))?;
+                return merge_toml_configs(&base_str, &ws_str);
+            }
+        }
+        Ok(base)
+    }
+
+    /// Default config file path (new location in data dir).
     pub fn default_path() -> Result<PathBuf> {
+        Ok(Self::data_dir()?.join("config.toml"))
+    }
+
+    /// Legacy config file path (`~/.config/Aptove/config.toml`).
+    pub fn legacy_config_path() -> Result<PathBuf> {
         let dir = dirs::config_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
         Ok(dir.join("Aptove").join("config.toml"))
@@ -239,11 +290,18 @@ impl AgentConfig {
                     bail!("unknown provider: '{}'. Expected: claude, gemini, or openai", other);
                 }
             };
+            let config_path = Self::default_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<unknown>".into());
             bail!(
-                "No API key for provider '{}'. Set {} environment variable or add api_key under [providers.{}]",
+                "No API key for provider '{}'. \
+                 Set the {} environment variable, \
+                 or add api_key under [providers.{}] in {}.\n\
+                 Run `aptove config init` to create a sample config file.",
                 self.provider,
                 env_var,
-                self.provider
+                self.provider,
+                config_path,
             );
         }
 
@@ -333,6 +391,41 @@ backoff_multiplier = 2.0
 }
 
 // ---------------------------------------------------------------------------
+// Config merging
+// ---------------------------------------------------------------------------
+
+/// Merge a base TOML config with a workspace overlay.
+///
+/// Workspace config fields override base config fields. Nested tables
+/// are merged recursively.
+pub fn merge_toml_configs(base_toml: &str, overlay_toml: &str) -> Result<AgentConfig> {
+    let mut base_val: toml::Value = toml::from_str(base_toml)
+        .context("failed to parse base config TOML")?;
+    let overlay_val: toml::Value = toml::from_str(overlay_toml)
+        .context("failed to parse overlay config TOML")?;
+    merge_toml_values(&mut base_val, &overlay_val);
+    let config: AgentConfig = base_val.try_into()
+        .context("merged config is not a valid AgentConfig")?;
+    Ok(config)
+}
+
+fn merge_toml_values(base: &mut toml::Value, overlay: &toml::Value) {
+    if base.is_table() && overlay.is_table() {
+        let overlay_table = overlay.as_table().unwrap().clone();
+        let base_table = base.as_table_mut().unwrap();
+        for (key, value) in overlay_table {
+            if let Some(base_value) = base_table.get_mut(&key) {
+                merge_toml_values(base_value, &value);
+            } else {
+                base_table.insert(key, value);
+            }
+        }
+    } else {
+        *base = overlay.clone();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -410,5 +503,66 @@ mod tests {
         let sample = sample_config();
         // Should parse without error (comments are valid TOML)
         let _config: AgentConfig = toml::from_str(&sample).unwrap();
+    }
+
+    #[test]
+    fn merge_overrides_provider() {
+        let base = r#"provider = "claude""#;
+        let overlay = r#"provider = "gemini""#;
+        let merged = merge_toml_configs(base, overlay).unwrap();
+        assert_eq!(merged.provider, "gemini");
+    }
+
+    #[test]
+    fn merge_preserves_base_when_overlay_empty() {
+        let base = r#"
+            provider = "claude"
+            [agent]
+            max_tool_iterations = 10
+        "#;
+        let overlay = "";
+        let merged = merge_toml_configs(base, overlay).unwrap();
+        assert_eq!(merged.provider, "claude");
+        assert_eq!(merged.agent.max_tool_iterations, 10);
+    }
+
+    #[test]
+    fn merge_nested_tables() {
+        let base = r#"
+            provider = "claude"
+            [providers.claude]
+            model = "sonnet"
+        "#;
+        let overlay = r#"
+            [providers.claude]
+            model = "opus"
+        "#;
+        let merged = merge_toml_configs(base, overlay).unwrap();
+        assert_eq!(
+            merged.providers.claude.as_ref().unwrap().model.as_deref(),
+            Some("opus")
+        );
+    }
+
+    #[test]
+    fn merge_adds_new_fields() {
+        let base = r#"provider = "claude""#;
+        let overlay = r#"
+            [[mcp_servers]]
+            name = "bash"
+            command = "mcp-server-bash"
+        "#;
+        let merged = merge_toml_configs(base, overlay).unwrap();
+        assert_eq!(merged.provider, "claude");
+        assert_eq!(merged.mcp_servers.len(), 1);
+        assert_eq!(merged.mcp_servers[0].name, "bash");
+    }
+
+    #[test]
+    fn data_dir_is_valid() {
+        let dir = AgentConfig::data_dir();
+        assert!(dir.is_ok());
+        let path = dir.unwrap();
+        assert!(path.to_string_lossy().contains("Aptove"));
     }
 }
