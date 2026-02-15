@@ -155,7 +155,7 @@ pub struct SystemPromptConfig {
 
 impl AgentConfig {
     /// Load config from the default location:
-    /// `~/.config/acp-agent/config.toml`
+    /// `~/.config/Aptove/config.toml`
     pub fn load_default() -> Result<Self> {
         let path = Self::default_path()?;
         if path.exists() {
@@ -180,7 +180,7 @@ impl AgentConfig {
     pub fn default_path() -> Result<PathBuf> {
         let dir = dirs::config_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
-        Ok(dir.join("acp-agent").join("config.toml"))
+        Ok(dir.join("Aptove").join("config.toml"))
     }
 
     /// Resolve the API key for a provider, checking config and then env vars.

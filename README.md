@@ -23,7 +23,7 @@ agent-mcp-bridge    MCP client that connects to external tool servers
 | `config` | TOML config loading, API key resolution, validation |
 | `system_prompt` | Prompt templates with mode/project overrides |
 | `retry` | Exponential backoff with jitter for API calls |
-| `persistence` | Save/load sessions to `~/.local/share/acp-agent/sessions/` |
+| `persistence` | Save/load sessions to `~/.local/share/Aptove/sessions/` |
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ cargo build
 # Generate a config file
 cargo run --bin aptove -- config init
 
-# Edit ~/.config/acp-agent/config.toml to add your API key
+# Edit the config file to add your API key (see Configuration section below)
 
 # Start in ACP stdio mode (for use with bridge/clients)
 cargo run --bin aptove -- run
@@ -51,7 +51,13 @@ cargo run --bin aptove -- chat
 
 ### Configuration
 
-Config file: `~/.config/acp-agent/config.toml`
+The config file location follows the OS-native convention via Rust's `dirs::config_dir()`:
+
+| OS | Config path |
+|---|---|
+| **macOS** | `~/Library/Application Support/Aptove/config.toml` |
+| **Linux** | `~/.config/Aptove/config.toml` |
+| **Windows** | `%APPDATA%\Aptove\config.toml` |
 
 ```toml
 provider = "claude"

@@ -61,7 +61,7 @@ Interactive REPL for direct terminal use.
 Configuration management.
 
 - **`show`** — Serializes the resolved config as pretty TOML to stdout.
-- **`init`** — Writes a commented sample config to `~/.config/acp-agent/config.toml` if it doesn't already exist.
+- **`init`** — Writes a commented sample config to `~/.config/Aptove/config.toml` if it doesn't already exist.
 
 ## Startup Flow
 

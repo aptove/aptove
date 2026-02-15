@@ -1,7 +1,7 @@
 //! Session Persistence
 //!
 //! Save and load sessions to/from disk as JSON files.
-//! Default location: `~/.local/share/acp-agent/sessions/`.
+//! Default location: `~/.local/share/Aptove/sessions/`.
 
 use std::path::{Path, PathBuf};
 
@@ -70,11 +70,11 @@ impl FileSessionStore {
     }
 
     /// Create a store at the default location:
-    /// `~/.local/share/acp-agent/sessions/`
+    /// `~/.local/share/Aptove/sessions/`
     pub fn default_location() -> Result<Self> {
         let base = dirs::data_local_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))?;
-        let dir = base.join("acp-agent").join("sessions");
+        let dir = base.join("Aptove").join("sessions");
         Self::new(&dir)
     }
 

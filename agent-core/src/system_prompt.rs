@@ -1,7 +1,7 @@
 //! System Prompt Manager
 //!
 //! Loads and manages system prompts: global defaults, per-mode prompts,
-//! project-level overrides from `.acp-agent/system_prompt.md`, and
+//! project-level overrides from `.Aptove/system_prompt.md`, and
 //! template variable substitution.
 
 use std::collections::HashMap;
@@ -45,9 +45,9 @@ impl SystemPromptManager {
     }
 
     /// Load the project-level override if it exists.
-    /// Looks for `.acp-agent/system_prompt.md` in the working directory.
+    /// Looks for `.Aptove/system_prompt.md` in the working directory.
     pub fn load_project_override(&mut self) -> Result<bool> {
-        let path = self.working_dir.join(".acp-agent").join("system_prompt.md");
+        let path = self.working_dir.join(".Aptove").join("system_prompt.md");
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
             info!(path = %path.display(), "loaded project system prompt override");

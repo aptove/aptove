@@ -80,7 +80,7 @@ Stream events and tool progress are emitted as `session/update` JSON-RPC notific
 
 ### `config` — Configuration
 
-TOML-based config at `~/.config/acp-agent/config.toml`.
+TOML-based config at `~/.config/Aptove/config.toml`.
 
 - `AgentConfig` with nested `ProvidersConfig` (claude/gemini/openai), `McpServerConfig` list, `AgentSettings` (max iterations, retry policy), `SystemPromptConfig`.
 - `resolve_api_key()` checks config first, then falls back to environment variables (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`).
@@ -91,7 +91,7 @@ TOML-based config at `~/.config/acp-agent/config.toml`.
 
 Layered prompt resolution with template variables.
 
-- Priority: project override (`.acp-agent/system_prompt.md`) > mode-specific > default.
+- Priority: project override (`.Aptove/system_prompt.md`) > mode-specific > default.
 - Template variables: `{{provider}}`, `{{model}}`, `{{tools}}` are substituted at build time.
 - `build_message()` returns a ready-to-use `Message { role: System, … }`.
 
@@ -108,7 +108,7 @@ Generic retry executor for transient API errors.
 Save/load sessions as JSON files.
 
 - `SessionStore` trait with `save`, `load`, `list`, `delete`.
-- `FileSessionStore` at `~/.local/share/acp-agent/sessions/`. Sessions are pretty-printed JSON. List is sorted newest-first and tolerates corrupt files.
+- `FileSessionStore` at `~/.local/share/Aptove/sessions/`. Sessions are pretty-printed JSON. List is sorted newest-first and tolerates corrupt files.
 
 ## Key Design Decisions
 

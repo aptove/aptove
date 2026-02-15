@@ -25,7 +25,7 @@ use agent_core::transport::{IncomingMessage, StdioTransport, TransportSender};
 #[derive(Parser)]
 #[command(name = "aptove", version = "0.1.0", about = "Aptove — ACP AI Coding Agent")]
 struct Cli {
-    /// Path to config file (default: ~/.config/acp-agent/config.toml)
+    /// Path to config file (default: ~/.config/Aptove/config.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
