@@ -135,6 +135,7 @@ pub async fn run_agent_loop(
         });
 
         // Call the LLM
+        info!(iteration = iterations, tool_count = tools.len(), message_count = all_messages.len(), "calling LLM provider");
         let response = provider.complete(&all_messages, tools, stream_cb).await?;
 
         // Accumulate usage
@@ -180,16 +181,37 @@ pub async fn run_agent_loop(
             });
         }
 
-        // Add tool call message
+        info!(
+            session_id,
+            tool_call_count = response.tool_calls.len(),
+            "LLM returned tool calls, executing them"
+        );
+
+        // Sanitize tool calls: Claude rejects null arguments, convert to empty objects
+        let sanitized_tool_calls: Vec<ToolCallRequest> = response
+            .tool_calls
+            .iter()
+            .map(|call| ToolCallRequest {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: if call.arguments.is_null() {
+                    serde_json::json!({})
+                } else {
+                    call.arguments.clone()
+                },
+            })
+            .collect();
+
+        // Add tool call message with sanitized arguments
         let tool_call_msg = Message {
             role: Role::Assistant,
-            content: MessageContent::ToolCalls(response.tool_calls.clone()),
+            content: MessageContent::ToolCalls(sanitized_tool_calls.clone()),
         };
         all_messages.push(tool_call_msg.clone());
         new_messages.push(tool_call_msg);
 
-        // Execute each tool call
-        for call in &response.tool_calls {
+        // Execute each tool call (using sanitized version)
+        for call in &sanitized_tool_calls {
             let mut call = call.clone();
 
             // Run on_before_tool_call hook
@@ -199,7 +221,7 @@ pub async fn run_agent_loop(
                 }
             }
 
-            debug!(
+            info!(
                 session_id,
                 tool = %call.name,
                 id = %call.id,
@@ -233,6 +255,14 @@ pub async fn run_agent_loop(
                     is_error: true,
                 }
             };
+
+            info!(
+                session_id,
+                tool = %call.name,
+                is_error = result.is_error,
+                result_len = result.content.len(),
+                "tool execution completed"
+            );
 
             // Run on_after_tool_call hook
             if let Some(host) = plugin_host {

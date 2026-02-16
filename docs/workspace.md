@@ -1,15 +1,16 @@
-# Workspaces & Sessions
+# Workspaces
 
-Aptove uses **workspaces** to isolate state for each user or device. A workspace is a UUID-identified folder that holds everything for one user — configuration overrides, a persistent conversation (`session.md`), MCP server state, and placeholder directories for future skills and memory.
+Aptove uses **workspaces** to isolate state for each user or device. A workspace is a UUID-identified folder that holds everything for one user — configuration overrides, a persistent conversation, MCP server state, and placeholder directories for future skills and memory.
 
 ## Concepts
 
 | Concept | Description |
 |---------|-------------|
 | **Workspace** | A UUID-named folder under `<data_dir>/Aptove/workspaces/<uuid>/` containing all user-scoped state |
-| **Session** | A single persistent conversation stored as `session.md` inside a workspace. One workspace = one session |
 | **Binding** | A mapping from a device identifier to a workspace UUID, stored in `bindings.toml` |
 | **Default workspace** | A well-known workspace at `workspaces/default/` used in CLI single-user mode |
+
+> **Note**: For session management (conversation persistence), see [session.md](./session.md)
 
 ## Data Directory Layout
 
@@ -29,7 +30,7 @@ All workspace data lives under the platform-specific data directory:
     ├── default/                   # Default workspace (CLI mode)
     │   ├── workspace.toml         # Workspace metadata
     │   ├── config.toml            # Per-workspace config overrides (optional)
-    │   ├── session.md             # Persistent conversation
+    │   ├── session.md             # Persistent conversation (see session.md)
     │   ├── mcp/                   # MCP server state/logs
     │   ├── skills/                # Skill definitions (future)
     │   └── memory/                # Long-term memory (future)
@@ -49,7 +50,7 @@ A workspace is created when:
 - The agent starts in CLI `chat` mode and no default workspace exists
 
 On creation, the filesystem backend (`FsWorkspaceStore`) generates:
-- The workspace folder with a UUID v4 name
+- The workspace folder with a UUID v4 name (or provided session ID from mobile apps)
 - `workspace.toml` — metadata (uuid, name, created_at, last_accessed, provider)
 - An empty `session.md`
 - Subdirectories: `mcp/`, `skills/`, `memory/`
@@ -58,17 +59,21 @@ On creation, the filesystem backend (`FsWorkspaceStore`) generates:
 
 When a device connects through the bridge:
 
-1. The `session/new` ACP request includes a `device_id` parameter
-2. `WorkspaceManager::resolve(device_id)` checks `BindingStore` for an existing mapping
-3. If a binding exists → loads that workspace and resumes the session
+1. The `session/new` ACP request may include:
+   - `device_id` parameter (legacy, deprecated)
+   - `_meta.sessionId` (preferred for mobile apps)
+2. `WorkspaceManager::resolve(identifier)` checks `BindingStore` for an existing mapping
+3. If a binding exists → loads that workspace
 4. If no binding exists → creates a new workspace, binds the device, returns the new workspace
 
 ```
-Device connects → BindingStore::resolve(device_id)
-                     ├── Found → WorkspaceStore::load(uuid) → resume session.md
+Device connects → BindingStore::resolve(identifier)
+                     ├── Found → WorkspaceStore::load(uuid) → load workspace
                      └── Not found → WorkspaceStore::create(new_uuid)
-                                   → BindingStore::bind(device_id, new_uuid)
+                                   → BindingStore::bind(identifier, new_uuid)
 ```
+
+**Mobile apps** pass a persistent `sessionId` in `_meta` to maintain the same workspace across app restarts. See [session.md](./session.md) for details.
 
 ### Deletion
 
@@ -80,66 +85,6 @@ Device connects → BindingStore::resolve(device_id)
 ### Garbage Collection
 
 `aptove workspace gc --max-age 90` removes workspaces not accessed within N days. The `default` workspace is never garbage-collected.
-
-## Session Persistence
-
-### `session.md` Format
-
-Each workspace has exactly one session file stored as human-readable structured markdown:
-
-```markdown
----
-provider: claude
-model: claude-sonnet-4-20250514
-created_at: 2026-02-15T10:30:00Z
----
-
-## User
-
-What files are in the current directory?
-
-## Assistant
-
-I'll check the directory listing for you. Here are the files:
-- src/
-- Cargo.toml
-- README.md
-
-## User
-
-Show me Cargo.toml
-
-## Assistant
-
-Here's the contents of Cargo.toml:
-...
-```
-
-**Rules:**
-- The frontmatter block (`---`) contains provider, model, and creation timestamp
-- Each message starts with a `## Role` header (`## User`, `## Assistant`, `## System`)
-- Only text messages are persisted — tool calls and tool results are ephemeral
-- The file is append-only during normal operation (each turn appends a new `## Role` block)
-
-### Session Lifecycle
-
-| Event | Action |
-|-------|--------|
-| Workspace created | Empty `session.md` written |
-| Device connects | `session.md` is parsed, messages restored into the context window |
-| User sends prompt | User message appended to `session.md` before LLM call |
-| Agent responds | Assistant message appended to `session.md` after loop completes |
-| User sends `/clear` | `session.md` reset to empty, in-memory context cleared |
-| Corrupt `session.md` | Warning logged, agent starts with empty context |
-
-### What Gets Persisted vs. What Doesn't
-
-| Persisted | Not Persisted |
-|-----------|---------------|
-| User text messages | Tool call requests |
-| Assistant text responses | Tool call results |
-| System prompt (if custom) | Intermediate tool loop messages |
-| Frontmatter metadata | Token usage stats |
 
 ## Configuration Layering
 
@@ -177,6 +122,8 @@ Bindings are stored in `<data_dir>/Aptove/bindings.toml`:
 
 The `FsBindingStore` keeps an in-memory cache and flushes to disk on every mutation for durability.
 
+**Mobile apps**: Session IDs from `_meta.sessionId` are used as workspace identifiers, creating a direct 1:1 mapping between session and workspace.
+
 ## CLI Commands
 
 ```bash
@@ -201,7 +148,7 @@ In **chat mode**, slash commands interact with the current workspace:
 | Command | Description |
 |---------|-------------|
 | `/workspace` | Show current workspace name, UUID, provider, model, message count |
-| `/clear` | Reset `session.md` and clear the in-memory context window |
+| `/clear` | Reset session (see [session.md](./session.md)) |
 | `/context` | Show current context window message count |
 | `/help` | Show all available commands |
 | `/quit` | Exit chat mode |
@@ -213,7 +160,7 @@ All storage operations are defined as async traits in `agent-core`:
 | Trait | Purpose | Methods |
 |-------|---------|---------|
 | `WorkspaceStore` | Workspace CRUD + GC | `create`, `load`, `list`, `delete`, `update_accessed`, `gc`, `load_config` |
-| `SessionStore` | Session persistence | `read`, `append`, `write`, `clear` |
+| `SessionStore` | Session persistence | `read`, `append`, `write`, `clear` (see [session.md](./session.md)) |
 | `BindingStore` | Device → workspace mapping | `resolve`, `bind`, `unbind`, `unbind_workspace` |
 
 The default filesystem implementation ships as the `agent-storage-fs` crate. Third parties can implement alternative backends (e.g., SQLite, Postgres, S3) by implementing these traits and passing them to `AgentBuilder`:
@@ -249,7 +196,35 @@ A single struct may implement all three traits, or different structs from differ
 
 ACP Request Flow:
   initialize → agent info + capabilities
-  session/new → resolve workspace → load session.md → create in-memory session
+  session/new → resolve workspace → load session → create in-memory session
   session/prompt → run agent loop → persist messages → return response
   session/cancel → cancel running loop
 ```
+
+## Workspace vs. Session
+
+| Aspect | Workspace | Session |
+|--------|-----------|---------|
+| **Scope** | All user state for a device/user | Single persistent conversation |
+| **Storage** | Folder with multiple files | Single `session.md` file |
+| **Lifecycle** | Created once, persists indefinitely | Can be cleared, regenerated |
+| **Identifier** | UUID (or session ID from mobile) | Stored within workspace folder |
+| **Contents** | Config, session, MCP state, skills, memory | Conversation messages only |
+
+> **Key Point**: Workspaces are containers. Sessions are the conversation inside them. One workspace = one session.
+
+## Best Practices
+
+1. **Use session IDs as workspace identifiers** (mobile apps) — Maintains consistency across restarts
+2. **Implement custom stores carefully** — All three traits must be thread-safe and durable
+3. **Workspace config is optional** — Don't create it unless overriding global settings
+4. **GC regularly** — Prevents unbounded workspace accumulation
+5. **Bindings are sacred** — Never manually edit `bindings.toml`, use the API
+6. **Per-workspace configs** — Use for different LLM providers or models per project/user
+7. **Test corruption handling** — Ensure graceful degradation when files are malformed
+
+## Related Documentation
+
+- [session.md](./session.md) — Session management and persistence
+- [config.md](./config.md) — Configuration format and options (if exists)
+- [mcp.md](./mcp.md) — MCP server integration (if exists)

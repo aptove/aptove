@@ -160,13 +160,21 @@ impl McpConnection {
 
     /// Call a tool on this MCP server.
     async fn call_tool(&mut self, name: &str, arguments: &serde_json::Value) -> Result<String> {
+        // MCP servers expect arguments to be an object, not null
+        // If arguments is null, send an empty object instead
+        let args = if arguments.is_null() {
+            serde_json::json!({})
+        } else {
+            arguments.clone()
+        };
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": self.next_request_id(),
             "method": "tools/call",
             "params": {
                 "name": name,
-                "arguments": arguments
+                "arguments": args
             }
         });
 
@@ -250,6 +258,8 @@ pub struct McpBridge {
     connections: HashMap<String, Mutex<McpConnection>>,
     /// Map tool name → MCP server name (for routing).
     tool_routing: HashMap<String, String>,
+    /// All discovered tool definitions.
+    all_tool_defs: Vec<ToolDefinition>,
 }
 
 impl McpBridge {
@@ -257,6 +267,7 @@ impl McpBridge {
         Self {
             connections: HashMap::new(),
             tool_routing: HashMap::new(),
+            all_tool_defs: Vec::new(),
         }
     }
 
@@ -265,10 +276,11 @@ impl McpBridge {
         for config in configs {
             match McpConnection::connect(config).await {
                 Ok(conn) => {
-                    // Register tool routing
+                    // Register tool routing and collect tool definitions
                     for tool in &conn.tools {
                         self.tool_routing
                             .insert(tool.name.clone(), config.name.clone());
+                        self.all_tool_defs.push(tool.clone());
                     }
                     self.connections
                         .insert(config.name.clone(), Mutex::new(conn));
@@ -287,10 +299,7 @@ impl McpBridge {
 
     /// Get all discovered tool definitions.
     pub fn all_tools(&self) -> Vec<ToolDefinition> {
-        let tools = Vec::new();
-        // TODO: Return actual tool definitions from connections
-        // Tools are currently tracked via the routing table
-        tools
+        self.all_tool_defs.clone()
     }
 
     /// Execute a tool call by routing to the correct MCP server.

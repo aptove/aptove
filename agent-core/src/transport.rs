@@ -103,13 +103,15 @@ pub struct TransportSender {
 impl TransportSender {
     /// Send a successful JSON-RPC response.
     pub async fn send_response(&self, id: JsonRpcId, result: Value) -> Result<()> {
+        debug!("queueing JSON-RPC response for id: {:?}", id);
         let msg = OutgoingMessage::Response(JsonRpcResponse {
             jsonrpc: "2.0".into(),
-            id,
+            id: id.clone(),
             result: Some(result),
             error: None,
         });
         self.tx.send(msg).await.context("stdout writer closed")?;
+        debug!("response queued successfully for id: {:?}", id);
         Ok(())
     }
 
@@ -236,6 +238,7 @@ impl StdioTransport {
 
     async fn stdout_writer_task(mut rx: mpsc::Receiver<OutgoingMessage>) {
         let mut stdout = io::stdout();
+        info!("stdout writer task started");
 
         while let Some(msg) = rx.recv().await {
             let json = match serde_json::to_string(&msg) {
@@ -248,15 +251,17 @@ impl StdioTransport {
             debug!(raw = %json, "→ send");
 
             let line = format!("{}\n", json);
-            if stdout.write_all(line.as_bytes()).await.is_err() {
-                error!("stdout write failed");
+            if let Err(e) = stdout.write_all(line.as_bytes()).await {
+                error!(err = %e, "stdout write failed");
                 break;
             }
-            if stdout.flush().await.is_err() {
-                error!("stdout flush failed");
+            if let Err(e) = stdout.flush().await {
+                error!(err = %e, "stdout flush failed");
                 break;
             }
+            debug!("message written and flushed to stdout");
         }
+        info!("stdout writer task exiting");
     }
 }
 

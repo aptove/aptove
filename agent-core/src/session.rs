@@ -74,6 +74,20 @@ impl Session {
         }
     }
 
+    /// Create a new session with a specific ID.
+    pub fn with_id(id: String, max_tokens: usize, provider: &str, model: &str) -> Self {
+        Self {
+            id,
+            created_at: Utc::now(),
+            mode: SessionMode::default(),
+            context: ContextWindow::new(max_tokens),
+            cancel_token: CancellationToken::new(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            is_busy: false,
+        }
+    }
+
     /// Add a user message to the session context.
     pub fn add_user_message(&mut self, text: &str) {
         self.context.add_message(Message {
@@ -146,6 +160,23 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         sessions.insert(id.clone(), Arc::new(Mutex::new(session)));
         id
+    }
+
+    /// Create or reuse a session with a specific ID.
+    /// If a session with this ID already exists, it will be replaced with a fresh one.
+    pub async fn create_session_with_id(
+        &self,
+        session_id: String,
+        max_tokens: usize,
+        provider: &str,
+        model: &str,
+    ) -> SessionId {
+        let session = Session::with_id(session_id.clone(), max_tokens, provider, model);
+        tracing::info!(session_id = %session_id, "created session with specific ID");
+
+        let mut sessions = self.sessions.write().await;
+        sessions.insert(session_id.clone(), Arc::new(Mutex::new(session)));
+        session_id
     }
 
     /// Create a new session, running `on_session_start` hooks on all

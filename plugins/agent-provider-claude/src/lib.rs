@@ -128,7 +128,10 @@ impl ClaudeProvider {
                     })
                 })
                 .collect();
+            info!(tool_count = api_tools.len(), tool_names = ?tools.iter().map(|t| &t.name).collect::<Vec<_>>(), "adding tools to Claude API request");
             body["tools"] = serde_json::json!(api_tools);
+        } else {
+            debug!("no tools provided to Claude API");
         }
 
         body

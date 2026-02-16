@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 use tracing::{error, info};
+use uuid::Uuid;
 
 use agent_core::agent_loop::{AgentLoopConfig, ToolExecutor};
 use agent_core::config::{self, AgentConfig};
@@ -442,23 +443,72 @@ async fn handle_session_new(
 ) -> Result<()> {
     let runtime = state.runtime.read().await;
 
-    // Extract optional device_id for workspace resolution
+    // Extract optional sessionId from _meta for session persistence
+    let session_id_from_meta = params
+        .as_ref()
+        .and_then(|p| p.get("_meta"))
+        .and_then(|m| m.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Extract optional device_id for workspace resolution (fallback if no sessionId)
     let device_id = params
         .as_ref()
         .and_then(|p| p.get("device_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("default");
 
-    // Resolve workspace
-    let workspace = if device_id == "default" {
-        runtime.workspace_manager().default().await
-            .context("failed to load default workspace")?
+    // For mobile apps: generate a session ID if not provided
+    // This ensures workspace UUID and session ID match
+    let session_id_to_use = if let Some(sid) = session_id_from_meta {
+        sid
+    } else if device_id == "default" {
+        // Mobile app first connection (no stored sessionId yet)
+        // Generate a new UUID that will be used for both workspace and session
+        let new_id = Uuid::new_v4().to_string();
+        info!(session_id = %new_id, "generated new session ID for mobile app");
+        new_id
     } else {
-        runtime.workspace_manager().resolve(device_id).await
-            .with_context(|| format!("failed to resolve workspace for device '{}'", device_id))?
+        // Legacy device_id flow - will use device_id for workspace binding
+        // Session will have separate random UUID
+        String::new()
     };
 
-    info!(workspace = %workspace.uuid, device_id, "resolved workspace for session");
+    // Resolve workspace based on sessionId or device_id
+    let (workspace, is_reusing_session) = if !session_id_to_use.is_empty() {
+        // Mobile app - use sessionId as workspace UUID
+        info!(session_id = %session_id_to_use, "using sessionId as workspace UUID");
+
+        // Try to load existing workspace with this UUID
+        match runtime.workspace_manager().workspace_store().load(&session_id_to_use).await {
+            Ok(ws) => {
+                // Workspace exists - this is a reconnection, mark as reusing
+                info!(workspace = %ws.uuid, "loaded existing workspace for sessionId (reusing session)");
+                (ws, true)
+            }
+            Err(_) => {
+                // Workspace doesn't exist, create it with this UUID
+                info!(session_id = %session_id_to_use, "creating new workspace with sessionId as UUID");
+                let ws = runtime.workspace_manager()
+                    .workspace_store()
+                    .create(&session_id_to_use, None, None)
+                    .await
+                    .with_context(|| format!("failed to create workspace with UUID '{}'", session_id_to_use))?;
+                // First connection - not reusing
+                (ws, false)
+            }
+        }
+    } else {
+        // Legacy device_id binding flow (not mobile app)
+        (runtime.workspace_manager().resolve(device_id).await
+            .with_context(|| format!("failed to resolve workspace for device '{}'", device_id))?, false)
+    };
+
+    info!(
+        workspace = %workspace.uuid,
+        is_reusing_session,
+        "resolved workspace for session"
+    );
 
     // Load workspace-specific config overlay (if any)
     let ws_config = match runtime.workspace_manager().load_workspace_config(&workspace.uuid).await {
@@ -486,7 +536,20 @@ async fn handle_session_new(
         .to_string();
     let model = ws_config.model_for_provider(&provider_name);
 
-    // Load persisted session
+    // If reusing session, clear the conversation history
+    if is_reusing_session {
+        info!(workspace = %workspace.uuid, "clearing session history for reused session");
+        if let Err(e) = runtime
+            .workspace_manager()
+            .session_store()
+            .clear(&workspace.uuid)
+            .await
+        {
+            warn!(workspace = %workspace.uuid, err = %e, "failed to clear session history");
+        }
+    }
+
+    // Load persisted session (will be empty if we just cleared it)
     let session_data = runtime
         .workspace_manager()
         .session_store()
@@ -500,11 +563,20 @@ async fn handle_session_new(
         Err(_) => 200_000,
     };
 
-    // Create in-memory session
-    let session_id = state
-        .session_manager
-        .create_session(max_tokens, &provider_name, &model)
-        .await;
+    // Create in-memory session using the determined session ID
+    let session_id = if !session_id_to_use.is_empty() {
+        // Mobile app: use the session_id_to_use (either from _meta or newly generated)
+        state
+            .session_manager
+            .create_session_with_id(session_id_to_use, max_tokens, &provider_name, &model)
+            .await
+    } else {
+        // Legacy flow: generate random session ID
+        state
+            .session_manager
+            .create_session(max_tokens, &provider_name, &model)
+            .await
+    };
 
     // Track session → workspace mapping
     state
@@ -688,6 +760,7 @@ async fn handle_session_prompt(
 
             let response = serde_json::to_value(&PromptResponse::new(acp_stop_reason))
                 .context("failed to serialize session/prompt response")?;
+            info!(session_id = %session_id, "sending session/prompt response");
             sender.send_response(id, response).await
         }
         Err(e) => {
