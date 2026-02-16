@@ -32,3 +32,4 @@ chrono.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 which.workspace = true
+uuid.workspace = true

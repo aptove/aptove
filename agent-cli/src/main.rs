@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use agent_core::agent_loop::{AgentLoopConfig, ToolExecutor};
