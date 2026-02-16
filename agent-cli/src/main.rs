@@ -447,9 +447,18 @@ async fn handle_session_new(
     let session_id_from_meta = params
         .as_ref()
         .and_then(|p| p.get("_meta"))
-        .and_then(|m| m.get("sessionId"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|m| {
+            info!("received _meta field: {:?}", m);
+            m.get("sessionId")
+        })
+        .and_then(|v| {
+            info!("extracted sessionId from _meta: {:?}", v);
+            v.as_str()
+        })
+        .map(|s| {
+            info!("parsed sessionId: {}", s);
+            s.to_string()
+        });
 
     // Extract optional device_id for workspace resolution (fallback if no sessionId)
     let device_id = params
