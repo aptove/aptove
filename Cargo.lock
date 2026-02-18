@@ -82,6 +82,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-plugin-git"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "agent-provider-claude"
 version = "0.1.0"
 dependencies = [

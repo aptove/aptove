@@ -7,6 +7,7 @@ members = [
     "plugins/agent-provider-openai",
     "plugins/agent-mcp-bridge",
     "plugins/agent-storage-fs",
+    "plugins/agent-plugin-git",
 ]
 resolver = "2"
 
@@ -24,6 +25,7 @@ agent-provider-claude = { path = "plugins/agent-provider-claude" }
 agent-provider-gemini = { path = "plugins/agent-provider-gemini" }
 agent-provider-openai = { path = "plugins/agent-provider-openai" }
 agent-mcp-bridge = { path = "plugins/agent-mcp-bridge" }
+agent-plugin-git = { path = "plugins/agent-plugin-git" }
 
 # ACP Protocol types
 agent-client-protocol-schema = "0.10"

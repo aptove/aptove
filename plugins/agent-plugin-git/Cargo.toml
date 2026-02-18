@@ -1,0 +1,20 @@
+[package]
+name = "agent-plugin-git"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Git integration plugin for the Aptove agent — dirty detection, auto-staging, and turn-based commits"
+
+[dependencies]
+agent-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
