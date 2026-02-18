@@ -1,0 +1,22 @@
+[package]
+name = "agent-plugin-diff"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Diff/edit-engine plugin for the Aptove agent — applies SEARCH/REPLACE blocks, unified diffs, and whole-file writes"
+
+[dependencies]
+agent-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+similar.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true

@@ -8,6 +8,7 @@ members = [
     "plugins/agent-mcp-bridge",
     "plugins/agent-storage-fs",
     "plugins/agent-plugin-git",
+    "plugins/agent-plugin-diff",
 ]
 resolver = "2"
 
@@ -26,6 +27,13 @@ agent-provider-gemini = { path = "plugins/agent-provider-gemini" }
 agent-provider-openai = { path = "plugins/agent-provider-openai" }
 agent-mcp-bridge = { path = "plugins/agent-mcp-bridge" }
 agent-plugin-git = { path = "plugins/agent-plugin-git" }
+agent-plugin-diff = { path = "plugins/agent-plugin-diff" }
+
+# Text diff / similarity
+similar = "2"
+
+# Regular expressions
+regex = "1"
 
 # ACP Protocol types
 agent-client-protocol-schema = "0.10"
