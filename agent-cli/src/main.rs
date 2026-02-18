@@ -927,9 +927,9 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
         }
     }
 
-    let runtime = build_runtime(config.clone()).await?;
-    let provider_name = runtime.active_provider_name().to_string();
-    let model = config.model_for_provider(&provider_name);
+    let mut runtime = build_runtime(config.clone()).await?;
+    let mut provider_name = runtime.active_provider_name().to_string();
+    let mut model = config.model_for_provider(&provider_name);
 
     // Load default workspace
     let mut workspace = runtime.workspace_manager().default().await?;
@@ -995,7 +995,7 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
     }
     eprintln!("   Type /help for commands, /quit to exit\n");
 
-    let provider = runtime.active_provider()
+    let mut provider = runtime.active_provider()
         .context("no active LLM provider")?;
     let loop_config = AgentLoopConfig {
         max_iterations: config.agent.max_tool_iterations,
@@ -1030,6 +1030,9 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                     eprintln!("  /workspace       - Show current workspace");
                     eprintln!("  /sessions        - List all saved sessions");
                     eprintln!("  /load <id>       - Resume a saved session by workspace ID");
+                    eprintln!("  /model <name>    - Switch model within the current provider");
+                    eprintln!("  /provider <name> - Switch to a different provider");
+                    eprintln!("  /mcp             - List connected MCP servers and their tools");
                     eprintln!("  /help            - Show this help");
                     eprintln!("  /quit            - Exit");
                 }
@@ -1160,6 +1163,96 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                                     restored,
                                     session_data.frontmatter.provider,
                                 );
+                            }
+                        }
+                    }
+                }
+                _ if line.starts_with("/model") => {
+                    let new_model = line.strip_prefix("/model").map(|s| s.trim()).unwrap_or("").to_string();
+                    if new_model.is_empty() {
+                        eprintln!("Current model: {}", model);
+                        eprintln!("Usage: /model <model-name>");
+                    } else {
+                        model = new_model;
+                        // Re-create the provider with the new model name.
+                        // build_runtime registered providers by name; we need to rebuild
+                        // for the new model. Re-use current provider_name.
+                        let new_runtime = build_runtime({
+                            let mut c = config.clone();
+                            // Override the model for the active provider
+                            match provider_name.as_str() {
+                                "claude" => {
+                                    if let Some(ref mut p) = c.providers.claude { p.model = Some(model.clone()); }
+                                }
+                                "gemini" => {
+                                    if let Some(ref mut p) = c.providers.gemini { p.model = Some(model.clone()); }
+                                }
+                                "openai" => {
+                                    if let Some(ref mut p) = c.providers.openai { p.model = Some(model.clone()); }
+                                }
+                                _ => {}
+                            }
+                            c
+                        }).await;
+                        match new_runtime {
+                            Ok(rt) => {
+                                runtime = rt;
+                                match runtime.active_provider() {
+                                    Ok(p) => {
+                                        provider = p;
+                                        eprintln!("✅ Model switched to: {}", model);
+                                    }
+                                    Err(e) => eprintln!("❌ Failed to get provider: {}", e),
+                                }
+                            }
+                            Err(e) => eprintln!("❌ Failed to switch model: {}", e),
+                        }
+                    }
+                }
+                _ if line.starts_with("/provider") => {
+                    let new_provider = line.strip_prefix("/provider").map(|s| s.trim()).unwrap_or("").to_string();
+                    if new_provider.is_empty() {
+                        let mut names = runtime.provider_names();
+                        names.sort();
+                        eprintln!("Current provider: {}", provider_name);
+                        eprintln!("Available providers: {}", names.join(", "));
+                        eprintln!("Usage: /provider <name>");
+                    } else {
+                        match runtime.set_active_provider(&new_provider) {
+                            Ok(()) => {
+                                match runtime.active_provider() {
+                                    Ok(p) => {
+                                        provider = p;
+                                        provider_name = new_provider.clone();
+                                        model = config.model_for_provider(&provider_name);
+                                        eprintln!(
+                                            "✅ Switched to provider: {} (model: {})",
+                                            provider_name, model
+                                        );
+                                    }
+                                    Err(e) => eprintln!("❌ Failed to get provider: {}", e),
+                                }
+                            }
+                            Err(e) => eprintln!("❌ {}", e),
+                        }
+                    }
+                }
+                "/mcp" => {
+                    match &mcp_bridge {
+                        None => eprintln!("No MCP servers configured."),
+                        Some(b) => {
+                            let bridge = b.lock().await;
+                            let servers = bridge.server_info();
+                            if servers.is_empty() {
+                                eprintln!("No MCP servers connected.");
+                            } else {
+                                for (server, alive, tool_names) in &servers {
+                                    let status = if *alive { "🟢 connected" } else { "🔴 disconnected" };
+                                    eprintln!("{} {} ({} tools)", status, server, tool_names.len());
+                                    for tool in tool_names {
+                                        eprintln!("    • {}", tool);
+                                    }
+                                }
                             }
                         }
                     }

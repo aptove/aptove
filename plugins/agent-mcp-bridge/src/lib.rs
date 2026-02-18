@@ -302,6 +302,23 @@ impl McpBridge {
         self.all_tool_defs.clone()
     }
 
+    /// List connected server names, their alive status, and tool count.
+    pub fn server_info(&self) -> Vec<(String, bool, Vec<String>)> {
+        let mut result = Vec::new();
+        for (server_name, conn) in &self.connections {
+            let alive = matches!(conn.try_lock(), Ok(_)); // alive if we can lock it
+            let tool_names: Vec<String> = self
+                .all_tool_defs
+                .iter()
+                .filter(|t| self.tool_routing.get(&t.name) == Some(server_name))
+                .map(|t| t.name.clone())
+                .collect();
+            result.push((server_name.clone(), alive, tool_names));
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
     /// Execute a tool call by routing to the correct MCP server.
     pub async fn execute_tool(&self, request: ToolCallRequest) -> ToolCallResult {
         let server_name = match self.tool_routing.get(&request.name) {
