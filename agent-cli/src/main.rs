@@ -376,6 +376,7 @@ async fn handle_message(msg: IncomingMessage, state: &AgentState) -> Result<()> 
             let result = match method.as_str() {
                 "initialize" => handle_initialize(id.clone(), state).await,
                 "session/new" => handle_session_new(id.clone(), &params, state).await,
+                "session/load" => handle_session_load(id.clone(), &params, state).await,
                 "session/prompt" => handle_session_prompt(id.clone(), &params, state).await,
                 _ => {
                     return state
@@ -786,6 +787,125 @@ async fn handle_session_prompt(
     }
 }
 
+async fn handle_session_load(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    // Accept "workspace_id" or "session_id" — in this architecture they are the same thing.
+    let workspace_id = params
+        .as_ref()
+        .and_then(|p| p.get("workspace_id").or_else(|| p.get("session_id")))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("session/load requires a 'workspace_id' parameter"))?
+        .to_string();
+
+    let runtime = state.runtime.read().await;
+
+    // Verify the workspace exists and update its last_accessed timestamp.
+    let workspace = runtime
+        .workspace_manager()
+        .workspace_store()
+        .load(&workspace_id)
+        .await
+        .with_context(|| format!("workspace '{}' not found", workspace_id))?;
+
+    let _ = runtime
+        .workspace_manager()
+        .workspace_store()
+        .update_accessed(&workspace_id)
+        .await;
+
+    info!(workspace = %workspace.uuid, "loading session from store");
+
+    // Apply workspace config overlay (same logic as session/new).
+    let ws_config = match runtime
+        .workspace_manager()
+        .load_workspace_config(&workspace.uuid)
+        .await
+    {
+        Ok(Some(ws_toml)) => {
+            match config::merge_toml_configs(&toml::to_string(&state.config)?, &ws_toml) {
+                Ok(merged) => merged,
+                Err(e) => {
+                    tracing::warn!(workspace = %workspace.uuid, err = %e, "failed to merge workspace config, using global");
+                    state.config.clone()
+                }
+            }
+        }
+        _ => state.config.clone(),
+    };
+
+    let provider_name = workspace
+        .provider
+        .as_deref()
+        .unwrap_or(ws_config.provider.as_str())
+        .to_string();
+    let model = ws_config.model_for_provider(&provider_name);
+
+    // Load persisted session data.
+    let session_data = runtime
+        .workspace_manager()
+        .session_store()
+        .read(&workspace_id)
+        .await
+        .unwrap_or_else(|_| agent_core::persistence::SessionData::new(&provider_name, &model));
+
+    info!(
+        workspace = %workspace_id,
+        message_count = session_data.messages.len(),
+        provider = %session_data.frontmatter.provider,
+        "restored session data"
+    );
+
+    // Get max context tokens from the active provider.
+    let max_tokens = match runtime.active_provider() {
+        Ok(p) => p.model_info().max_context_tokens,
+        Err(_) => 200_000,
+    };
+
+    // Create (or replace) the in-memory session, using workspace_id as session_id
+    // so subsequent session/prompt calls can reference it.
+    let session_id = state
+        .session_manager
+        .create_session_with_id(workspace_id.clone(), max_tokens, &provider_name, &model)
+        .await;
+
+    // Track session → workspace mapping.
+    state
+        .session_workspaces
+        .write()
+        .await
+        .insert(session_id.clone(), workspace_id.clone());
+
+    // Inject system prompt and restore persisted messages.
+    let session_arc = state.session_manager.get_session(&session_id).await?;
+    {
+        let mut session = session_arc.lock().await;
+
+        let sys_prompt_mgr = SystemPromptManager::new(
+            ws_config
+                .system_prompt
+                .default
+                .as_deref()
+                .unwrap_or(DEFAULT_SYSTEM_PROMPT),
+            &std::env::current_dir().unwrap_or_default(),
+        );
+        let tools: Vec<String> = runtime.tools().iter().map(|t| t.name.clone()).collect();
+        let vars = SystemPromptManager::default_variables(&provider_name, &model, &tools);
+        let sys_msg = sys_prompt_mgr.build_message(None, &vars);
+        session.context.add_message(sys_msg);
+
+        for msg in &session_data.messages {
+            session.context.add_message(msg.clone());
+        }
+    }
+
+    let result = serde_json::to_value(&NewSessionResponse::new(session_id))
+        .context("failed to serialize session/load response")?;
+    state.sender.send_response(id, result).await
+}
+
 // ---------------------------------------------------------------------------
 // Chat REPL mode
 // ---------------------------------------------------------------------------
@@ -812,7 +932,7 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
     let model = config.model_for_provider(&provider_name);
 
     // Load default workspace
-    let workspace = runtime.workspace_manager().default().await?;
+    let mut workspace = runtime.workspace_manager().default().await?;
 
     // Set up MCP bridge for tools
     let mcp_bridge = setup_mcp_bridge(&config).await?;
@@ -905,11 +1025,13 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                 }
                 "/help" | "/h" => {
                     eprintln!("Available commands:");
-                    eprintln!("  /clear      - Clear conversation and session.md");
-                    eprintln!("  /context    - Show context window status");
-                    eprintln!("  /workspace  - Show current workspace");
-                    eprintln!("  /help       - Show this help");
-                    eprintln!("  /quit       - Exit");
+                    eprintln!("  /clear           - Clear conversation and session.md");
+                    eprintln!("  /context         - Show context window status");
+                    eprintln!("  /workspace       - Show current workspace");
+                    eprintln!("  /sessions        - List all saved sessions");
+                    eprintln!("  /load <id>       - Resume a saved session by workspace ID");
+                    eprintln!("  /help            - Show this help");
+                    eprintln!("  /quit            - Exit");
                 }
                 "/workspace" => {
                     eprintln!(
@@ -937,6 +1059,110 @@ async fn run_chat_mode(config: AgentConfig) -> Result<()> {
                 "/context" => {
                     let msg_count = messages.len() - 1; // exclude system prompt
                     eprintln!("📊 Context: {} messages ({} user + assistant turns)", msg_count, msg_count / 2);
+                }
+                "/sessions" => {
+                    let workspaces = runtime
+                        .workspace_manager()
+                        .list()
+                        .await
+                        .unwrap_or_default();
+                    if workspaces.is_empty() {
+                        eprintln!("No saved sessions found.");
+                    } else {
+                        eprintln!(
+                            "{:<38} {:<18} {:>8}  {}",
+                            "ID", "DATE", "MESSAGES", "PROVIDER"
+                        );
+                        eprintln!("{}", "-".repeat(76));
+                        for ws in &workspaces {
+                            let session_data = runtime
+                                .workspace_manager()
+                                .session_store()
+                                .read(&ws.uuid)
+                                .await
+                                .unwrap_or_else(|_| {
+                                    agent_core::persistence::SessionData::new("-", "-")
+                                });
+                            let msg_count = session_data.messages.len();
+                            let provider = if ws.provider.as_deref().unwrap_or("") != "" {
+                                ws.provider.as_deref().unwrap_or("-").to_string()
+                            } else {
+                                session_data.frontmatter.provider.clone()
+                            };
+                            eprintln!(
+                                "{:<38} {:<18} {:>8}  {}",
+                                ws.uuid,
+                                ws.last_accessed.format("%Y-%m-%d %H:%M"),
+                                msg_count,
+                                provider,
+                            );
+                        }
+                    }
+                }
+                _ if line.starts_with("/load") => {
+                    let ws_id = line.strip_prefix("/load").map(|s| s.trim()).unwrap_or("").to_string();
+                    if ws_id.is_empty() {
+                        eprintln!("Usage: /load <workspace-id>");
+                        eprintln!("       Use /sessions to list available session IDs.");
+                    } else {
+                        match runtime
+                            .workspace_manager()
+                            .workspace_store()
+                            .load(&ws_id)
+                            .await
+                        {
+                            Err(_) => {
+                                eprintln!("❌ Session '{}' not found.", ws_id);
+                                eprintln!("   Use /sessions to list available session IDs.");
+                            }
+                            Ok(loaded_ws) => {
+                                let session_data = runtime
+                                    .workspace_manager()
+                                    .session_store()
+                                    .read(&ws_id)
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        agent_core::persistence::SessionData::new(
+                                            &provider_name,
+                                            &model,
+                                        )
+                                    });
+
+                                // Rebuild context: system prompt + restored messages.
+                                let sys_prompt_mgr = SystemPromptManager::new(
+                                    config
+                                        .system_prompt
+                                        .default
+                                        .as_deref()
+                                        .unwrap_or(DEFAULT_SYSTEM_PROMPT),
+                                    &std::env::current_dir().unwrap_or_default(),
+                                );
+                                let tool_names: Vec<String> =
+                                    tools.iter().map(|t| t.name.clone()).collect();
+                                let vars = SystemPromptManager::default_variables(
+                                    &provider_name,
+                                    &model,
+                                    &tool_names,
+                                );
+                                let sys_msg = sys_prompt_mgr.build_message(None, &vars);
+
+                                messages = vec![sys_msg];
+                                for msg in &session_data.messages {
+                                    messages.push(msg.clone());
+                                }
+
+                                let restored = session_data.messages.len();
+                                workspace = loaded_ws;
+
+                                eprintln!(
+                                    "✅ Loaded session {} ({} messages, provider: {})",
+                                    ws_id,
+                                    restored,
+                                    session_data.frontmatter.provider,
+                                );
+                            }
+                        }
+                    }
                 }
                 _ => {
                     eprintln!(

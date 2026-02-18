@@ -20,14 +20,20 @@ use agent_core::plugin::{
 pub struct GeminiProvider {
     api_key: String,
     model: String,
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl GeminiProvider {
     pub fn new(api_key: &str, model: &str) -> Self {
+        Self::with_base_url(api_key, model, "https://generativelanguage.googleapis.com")
+    }
+
+    pub fn with_base_url(api_key: &str, model: &str, base_url: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
             model: model.to_string(),
+            base_url: base_url.to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -127,8 +133,8 @@ impl LlmProvider for GeminiProvider {
     ) -> Result<LlmResponse> {
         let body = self.build_request_body(messages, tools);
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.base_url, self.model, self.api_key
         );
 
         debug!(model = %self.model, "calling Gemini API");
