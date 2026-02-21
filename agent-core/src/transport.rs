@@ -269,7 +269,7 @@ impl StdioTransport {
 ///
 /// Identical protocol to [`StdioTransport`] but backed by `tokio::sync::mpsc`
 /// channels instead of stdin/stdout. Used when the agent runs in the same
-/// process as the bridge server (`aptove serve`).
+/// process as the bridge server (`aptove run`).
 ///
 /// The bridge writes newline-delimited JSON-RPC into `input_tx`;
 /// the agent reads from `input_rx`. Agent responses are written to

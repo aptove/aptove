@@ -24,10 +24,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start in ACP stdio mode (default)
-    Run,
-    /// Run the ACP agent and WebSocket bridge in a single process
-    Serve {
+    /// Run the ACP agent and WebSocket bridge in a single process (default)
+    Run {
         /// Port to listen on (overrides config.toml [serve] port)
         #[arg(long)]
         port: Option<u16>,
@@ -42,6 +40,8 @@ pub enum Commands {
         #[arg(long, value_name = "MODE")]
         transport: Option<String>,
     },
+    /// Start in ACP stdio mode (for use with an external bridge)
+    Stdio,
     /// Interactive REPL chat mode
     Chat,
     /// Workspace management

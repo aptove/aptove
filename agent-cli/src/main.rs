@@ -1,7 +1,8 @@
 //! Aptove Agent CLI
 //!
 //! Binary entry point. Provides multiple modes:
-//! - `run` (default): ACP stdio mode for use with bridge or ACP clients
+//! - `run` (default): Standalone mode — ACP agent + WebSocket bridge in one process
+//! - `stdio`: ACP stdio mode for use with an external bridge or ACP client
 //! - `chat`: Interactive REPL with slash commands
 //! - `workspace`: Workspace management commands
 //! - `config`: Configuration management
@@ -88,9 +89,11 @@ async fn run() -> Result<()> {
         base_config
     };
 
-    match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_acp_mode(agent_config).await,
-        Commands::Serve { port, tls, bind, transport } => {
+    match cli.command.unwrap_or(Commands::Run {
+        port: None, tls: None, bind: None, transport: None,
+    }) {
+        Commands::Stdio => run_acp_mode(agent_config).await,
+        Commands::Run { port, tls, bind, transport } => {
             // Start from the [serve] section in config.toml (or workspace override).
             // CLI flags take precedence over config file values.
             let serve = &agent_config.serve;
@@ -147,7 +150,7 @@ async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>)
 }
 
 // ---------------------------------------------------------------------------
-// ACP stdio mode
+// ACP stdio mode (aptove stdio)
 // ---------------------------------------------------------------------------
 
 async fn run_acp_mode(config: AgentConfig) -> Result<()> {

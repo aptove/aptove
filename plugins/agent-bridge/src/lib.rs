@@ -1,4 +1,4 @@
-//! `agent-bridge` — Embedded bridge server for `aptove serve`.
+//! `agent-bridge` — Embedded bridge server for `aptove run`.
 //!
 //! Wires an [`AgentRuntime`] directly to a [`StdioBridge`] via in-process
 //! channels, so the agent and bridge server run in the same process with no

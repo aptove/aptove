@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Unified configuration for `aptove serve` — merges agent config fields
+/// Unified configuration for `aptove run` — merges agent config fields
 /// with bridge transport/TLS/auth settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,7 +26,7 @@ pub struct BridgeServeConfig {
     pub config_dir: PathBuf,
 }
 
-/// Transport mode for `aptove serve`.
+/// Transport mode for `aptove run`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServeTransport {

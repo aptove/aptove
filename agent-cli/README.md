@@ -37,6 +37,15 @@ Binary entry point for the Aptove agent. Compiles to the `aptove` executable.
 
 ### `aptove run` (default)
 
+Standalone mode — runs the ACP agent and WebSocket bridge in a single process. This is the default when you run `aptove` without arguments.
+
+- Reads serve settings from the `[serve]` section of `config.toml` (port, TLS, transport, etc.).
+- CLI flags (`--port`, `--tls`, `--transport`, `--bind`) override config file values.
+- With `--workspace <uuid>`, merges the workspace's `config.toml` overlay before starting.
+- See [docs/run-mode.md](../docs/run-mode.md) for full details and transport options.
+
+### `aptove stdio`
+
 ACP stdio mode. Designed to be launched as a child process by the [bridge](../../bridge/) or any ACP-compliant client.
 
 - Creates a `StdioTransport` that reads JSON-RPC from stdin and writes to stdout.

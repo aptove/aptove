@@ -25,7 +25,7 @@ pub struct BridgeServer {
 impl BridgeServer {
     /// Build the bridge server and return the paired in-process transport.
     ///
-    /// Run both concurrently from `aptove serve`:
+    /// Run both concurrently from `aptove run`:
     /// ```ignore
     /// let server = BridgeServer::build(&config)?;
     /// tokio::select! {

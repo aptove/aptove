@@ -156,7 +156,7 @@ pub struct SystemPromptConfig {
 /// Bridge / serve mode settings.
 ///
 /// Configured under `[serve]` in `config.toml` or a workspace's `config.toml`.
-/// CLI flags passed to `aptove serve` take precedence over these values.
+/// CLI flags passed to `aptove run` take precedence over these values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServeConfig {
     /// TCP port for the WebSocket bridge server (default 8765).
@@ -437,7 +437,7 @@ backoff_multiplier = 2.0
 # planning = "You are in planning mode. Think step by step."
 # reviewing = "You are reviewing code. Focus on bugs and improvements."
 
-# Bridge / serve mode settings (used by `aptove serve`)
+# Bridge / serve mode settings (used by `aptove run`)
 # These can be overridden per-workspace in:
 #   <data_dir>/workspaces/<uuid>/config.toml
 # CLI flags (--port, --tls, --transport, --bind) take precedence over these values.
