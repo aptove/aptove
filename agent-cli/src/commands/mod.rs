@@ -28,17 +28,17 @@ pub enum Commands {
     Run,
     /// Run the ACP agent and WebSocket bridge in a single process
     Serve {
-        /// Port to listen on
-        #[arg(long, default_value = "8765")]
-        port: u16,
-        /// Enable TLS
-        #[arg(long, default_value = "true")]
-        tls: bool,
-        /// Bind address (default: 0.0.0.0)
+        /// Port to listen on (overrides config.toml [serve] port)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Enable TLS (overrides config.toml [serve] tls)
+        #[arg(long)]
+        tls: Option<bool>,
+        /// Bind address (overrides config.toml [serve] bind_addr)
         #[arg(long)]
         bind: Option<String>,
         /// Network transport mode: local, cloudflare, tailscale-serve, tailscale-ip
-        /// (default: local). Overrides bridge.toml setting.
+        /// (overrides config.toml [serve] transport)
         #[arg(long, value_name = "MODE")]
         transport: Option<String>,
     },

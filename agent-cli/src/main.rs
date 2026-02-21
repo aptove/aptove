@@ -68,27 +68,46 @@ async fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load config
-    let agent_config = if let Some(ref path) = cli.config {
+    // Load global config (explicit path or default location)
+    let base_config = if let Some(ref path) = cli.config {
         AgentConfig::load_from(path)
             .map_err(|e| anyhow::anyhow!("failed to load config from '{}': {}", path.display(), e))?
     } else {
         AgentConfig::load_default()?
     };
 
+    // If a specific workspace is given, merge its config.toml on top of the global config.
+    // This lets workspace/config.toml override any [serve] (or other) settings.
+    let agent_config = if let Some(ref uuid) = cli.workspace {
+        let ws_config_path = AgentConfig::data_dir()?
+            .join("workspaces")
+            .join(uuid)
+            .join("config.toml");
+        AgentConfig::load_with_workspace(Some(&ws_config_path))?
+    } else {
+        base_config
+    };
+
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_acp_mode(agent_config).await,
         Commands::Serve { port, tls, bind, transport } => {
-            let mut bridge_config = BridgeServeConfig::load()
-                .unwrap_or_default();
-            bridge_config.port = port;
-            bridge_config.tls = tls;
-            if let Some(addr) = bind {
-                bridge_config.bind_addr = addr;
-            }
-            if let Some(mode) = transport {
+            // Start from the [serve] section in config.toml (or workspace override).
+            // CLI flags take precedence over config file values.
+            let serve = &agent_config.serve;
+            let mut bridge_config = BridgeServeConfig {
+                port: port.unwrap_or(serve.port),
+                tls: tls.unwrap_or(serve.tls),
+                bind_addr: bind.unwrap_or_else(|| serve.bind_addr.clone()),
+                auth_token: serve.auth_token.clone(),
+                keep_alive: serve.keep_alive,
+                ..BridgeServeConfig::default()
+            };
+            if let Some(mode) = transport.or_else(|| {
+                let t = serve.transport.as_str();
+                if t == "local" { None } else { Some(t.to_string()) }
+            }) {
                 bridge_config.transport = match mode.to_lowercase().as_str() {
-                    "cloudflare" => ServeTransport::Cloudflare,
+                    "cloudflare"      => ServeTransport::Cloudflare,
                     "tailscale-serve" => ServeTransport::TailscaleServe,
                     "tailscale-ip"    => ServeTransport::TailscaleIp,
                     "local"           => ServeTransport::Local,

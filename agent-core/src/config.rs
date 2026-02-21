@@ -36,6 +36,10 @@ pub struct AgentConfig {
     /// System prompt settings.
     #[serde(default)]
     pub system_prompt: SystemPromptConfig,
+
+    /// Bridge / serve mode settings.
+    #[serde(default)]
+    pub serve: ServeConfig,
 }
 
 fn default_provider() -> String {
@@ -147,6 +151,51 @@ pub struct SystemPromptConfig {
     /// Per-mode prompts.
     #[serde(default)]
     pub modes: HashMap<String, String>,
+}
+
+/// Bridge / serve mode settings.
+///
+/// Configured under `[serve]` in `config.toml` or a workspace's `config.toml`.
+/// CLI flags passed to `aptove serve` take precedence over these values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServeConfig {
+    /// TCP port for the WebSocket bridge server (default 8765).
+    #[serde(default = "default_serve_port")]
+    pub port: u16,
+    /// Bind address (default `"0.0.0.0"`).
+    #[serde(default = "default_bind_addr")]
+    pub bind_addr: String,
+    /// Enable TLS with a self-signed certificate (default true).
+    #[serde(default = "default_tls")]
+    pub tls: bool,
+    /// Network transport mode (default `"local"`).
+    ///
+    /// Accepted values: `"local"`, `"cloudflare"`, `"tailscale-serve"`, `"tailscale-ip"`.
+    #[serde(default = "default_serve_transport")]
+    pub transport: String,
+    /// Optional bearer token clients must supply to connect.
+    pub auth_token: Option<String>,
+    /// Keep a warm agent pool for faster session creation (default false).
+    #[serde(default)]
+    pub keep_alive: bool,
+}
+
+fn default_serve_port() -> u16 { 8765 }
+fn default_bind_addr() -> String { "0.0.0.0".to_string() }
+fn default_tls() -> bool { true }
+fn default_serve_transport() -> String { "local".to_string() }
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        Self {
+            port: default_serve_port(),
+            bind_addr: default_bind_addr(),
+            tls: default_tls(),
+            transport: default_serve_transport(),
+            auth_token: None,
+            keep_alive: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +376,7 @@ impl Default for AgentConfig {
             mcp_servers: Vec::new(),
             agent: AgentSettings::default(),
             system_prompt: SystemPromptConfig::default(),
+            serve: ServeConfig::default(),
         }
     }
 }
@@ -386,6 +436,19 @@ backoff_multiplier = 2.0
 # [system_prompt.modes]
 # planning = "You are in planning mode. Think step by step."
 # reviewing = "You are reviewing code. Focus on bugs and improvements."
+
+# Bridge / serve mode settings (used by `aptove serve`)
+# These can be overridden per-workspace in:
+#   <data_dir>/workspaces/<uuid>/config.toml
+# CLI flags (--port, --tls, --transport, --bind) take precedence over these values.
+#
+# [serve]
+# port = 8765
+# bind_addr = "0.0.0.0"
+# tls = true
+# transport = "local"    # local | cloudflare | tailscale-serve | tailscale-ip
+# auth_token = "secret"  # optional bearer token for WebSocket connections
+# keep_alive = false
 "#
     .to_string()
 }
