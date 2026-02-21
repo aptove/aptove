@@ -16,6 +16,7 @@ pub mod scheduler;
 pub mod session;
 pub mod system_prompt;
 pub mod transport;
+pub mod trigger;
 pub mod workspace;
 
 // Re-export key types
@@ -28,4 +29,8 @@ pub use plugin::{LlmProvider, LlmResponse, ModelInfo, OutputChunk, Plugin, Plugi
 pub use scheduler::{JobDefinition, JobRun, JobStatus, JobSummary, SchedulerStore};
 pub use session::{Session, SessionManager};
 pub use transport::{StdioTransport, InProcessTransport};
+pub use trigger::{
+    TriggerDefinition, TriggerEvent, TriggerRun, TriggerStatus, TriggerStore, TriggerSummary,
+    generate_token, render_template,
+};
 pub use workspace::{WorkspaceManager, WorkspaceMetadata, WorkspaceStore, WorkspaceSummary};

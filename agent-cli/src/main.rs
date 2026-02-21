@@ -20,6 +20,7 @@ use agent_core::agent_loop::{AgentLoopConfig, ToolExecutor};
 use agent_core::config::{self, AgentConfig};
 use agent_core::plugin::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult};
 use agent_core::scheduler::{JobDefinition, JobRun, JobStatus, JobSummary, SchedulerStore};
+use agent_core::trigger::{TriggerDefinition, TriggerEvent, TriggerStore, TriggerSummary};
 use agent_core::session::SessionManager;
 use agent_core::system_prompt::{SystemPromptManager, DEFAULT_SYSTEM_PROMPT};
 use agent_core::transport::{IncomingMessage, JsonRpcId, StdioTransport, TransportSender};
@@ -37,7 +38,7 @@ use agent_bridge::{BridgeServer, BridgeServeConfig};
 use agent_provider_claude::ClaudeProvider;
 use agent_provider_gemini::GeminiProvider;
 use agent_provider_openai::OpenAiProvider;
-use agent_storage_fs::{FsBindingStore, FsSchedulerStore, FsSessionStore, FsWorkspaceStore};
+use agent_storage_fs::{FsBindingStore, FsSchedulerStore, FsSessionStore, FsTriggerStore, FsWorkspaceStore};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -90,6 +91,11 @@ enum Commands {
     Jobs {
         #[command(subcommand)]
         action: JobsAction,
+    },
+    /// Webhook trigger management
+    Triggers {
+        #[command(subcommand)]
+        action: TriggersAction,
     },
 }
 
@@ -158,6 +164,88 @@ enum JobsAction {
     Delete {
         /// Job UUID
         job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TriggersAction {
+    /// List all webhook triggers in a workspace
+    List {
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Create a new webhook trigger
+    Create {
+        /// Trigger display name
+        #[arg(long)]
+        name: String,
+        /// Prompt template (use {{payload}}, {{content_type}}, {{timestamp}}, {{trigger_name}}, {{headers}})
+        #[arg(long)]
+        prompt: String,
+        /// Rate limit — max events per minute (0 = unlimited)
+        #[arg(long, default_value = "60")]
+        rate_limit: u32,
+        /// Optional HMAC-SHA256 secret for signature verification
+        #[arg(long)]
+        hmac_secret: Option<String>,
+        /// Accepted content types (comma-separated, empty = any)
+        #[arg(long)]
+        content_types: Option<String>,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Show a trigger's details and latest run
+    Show {
+        /// Trigger UUID
+        trigger_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Send a test event to a trigger (executes the prompt template)
+    Test {
+        /// Trigger UUID
+        trigger_id: String,
+        /// Test payload body
+        #[arg(long, default_value = "{}")]
+        payload: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Enable a trigger
+    Enable {
+        /// Trigger UUID
+        trigger_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Disable a trigger
+    Disable {
+        /// Trigger UUID
+        trigger_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Delete a trigger and its run history
+    Delete {
+        /// Trigger UUID
+        trigger_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Regenerate the webhook token (invalidates the old URL)
+    RegenerateToken {
+        /// Trigger UUID
+        trigger_id: String,
         /// Workspace UUID (default: uses default workspace)
         #[arg(long)]
         workspace: Option<String>,
@@ -256,6 +344,7 @@ async fn run() -> Result<()> {
         Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
         Commands::Config { action } => run_config_command(action, agent_config),
         Commands::Jobs { action } => run_jobs_command(action, agent_config).await,
+        Commands::Triggers { action } => run_triggers_command(action, agent_config).await,
     }
 }
 
@@ -341,12 +430,15 @@ async fn build_runtime(config: AgentConfig) -> Result<AgentRuntime> {
         .context("failed to initialize binding store")?);
     let scheduler_store = Arc::new(FsSchedulerStore::new(&data_dir)
         .context("failed to initialize scheduler store")?);
+    let trigger_store = Arc::new(FsTriggerStore::new(&data_dir)
+        .context("failed to initialize trigger store")?);
 
     builder = builder
         .with_workspace_store(ws_store)
         .with_session_store(session_store)
         .with_binding_store(binding_store)
-        .with_scheduler_store(scheduler_store);
+        .with_scheduler_store(scheduler_store)
+        .with_trigger_store(trigger_store);
 
     builder.build()
         .context("failed to build agent runtime")
@@ -449,6 +541,7 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
     };
 
     let scheduler_store = runtime.scheduler_store().cloned();
+    let trigger_store = runtime.trigger_store().cloned();
     let session_manager = SessionManager::new();
     let mut transport = StdioTransport::new();
     let sender = transport.sender();
@@ -461,6 +554,7 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
         mcp_bridge,
         sender,
         scheduler_store,
+        trigger_store,
     });
 
     info!("ready to accept ACP requests");
@@ -542,7 +636,8 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
     };
 
     let scheduler_store = runtime.scheduler_store().cloned();
-    let server = BridgeServer::build(&bridge_config)?;
+    let trigger_store = runtime.trigger_store().cloned();
+    let server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())?;
     let mut transport = server.transport;
     let sender = transport.sender();
 
@@ -554,6 +649,7 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
         mcp_bridge,
         sender,
         scheduler_store,
+        trigger_store,
     });
 
     info!("ready — bridge server starting");
@@ -597,6 +693,8 @@ struct AgentState {
     sender: TransportSender,
     /// Scheduler store for jobs/* ACP methods (None if not configured).
     scheduler_store: Option<Arc<dyn SchedulerStore>>,
+    /// Trigger store for triggers/* ACP methods (None if not configured).
+    trigger_store: Option<Arc<dyn TriggerStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +716,13 @@ async fn handle_message(msg: IncomingMessage, state: &AgentState) -> Result<()> 
                 "jobs/delete" => handle_jobs_delete(id.clone(), &params, state).await,
                 "jobs/history" => handle_jobs_history(id.clone(), &params, state).await,
                 "jobs/trigger" => handle_jobs_trigger(id.clone(), &params, state).await,
+                "triggers/create" => handle_triggers_create(id.clone(), &params, state).await,
+                "triggers/list" => handle_triggers_list(id.clone(), &params, state).await,
+                "triggers/get" => handle_triggers_get(id.clone(), &params, state).await,
+                "triggers/update" => handle_triggers_update(id.clone(), &params, state).await,
+                "triggers/delete" => handle_triggers_delete(id.clone(), &params, state).await,
+                "triggers/history" => handle_triggers_history(id.clone(), &params, state).await,
+                "triggers/regenerate_token" => handle_triggers_regenerate_token(id.clone(), &params, state).await,
                 _ => {
                     return state
                         .sender
@@ -654,6 +759,45 @@ async fn handle_message(msg: IncomingMessage, state: &AgentState) -> Result<()> 
                     .and_then(|v| v.as_str())
                 {
                     let _ = state.session_manager.cancel_session(session_id).await;
+                }
+            } else if method == "triggers/execute" {
+                // Fire-and-forget: bridge sends this when a webhook event arrives.
+                // We deserialize the event and execute the trigger asynchronously.
+                if let Some(ref p) = params {
+                    if let Ok(event) = serde_json::from_value::<TriggerEvent>(p.clone()) {
+                        let trigger_store = state.trigger_store.clone();
+                        let scheduler_store = state.scheduler_store.clone();
+                        let runtime = state.runtime.read().await;
+                        let provider = runtime.active_provider().ok();
+                        let ws_store = runtime.workspace_manager().workspace_store().clone();
+                        drop(runtime);
+                        if let (Some(tstore), Some(sstore), Some(provider)) =
+                            (trigger_store, scheduler_store, provider)
+                        {
+                            tokio::spawn(async move {
+                                match tstore.get_trigger(&event.workspace_id, &event.trigger_id).await {
+                                    Ok(trigger) => {
+                                        let scheduler = Scheduler::new(sstore, ws_store, provider);
+                                        let run = scheduler.execute_trigger(&trigger, &event).await;
+                                        tstore.write_run(&event.workspace_id, &event.trigger_id, &run).await.ok();
+                                        // Update last_event_at
+                                        let mut updated = trigger.clone();
+                                        updated.last_event_at = Some(event.received_at);
+                                        updated.updated_at = chrono::Utc::now();
+                                        tstore.update_trigger(&event.workspace_id, &updated).await.ok();
+                                        // Prune old runs
+                                        if trigger.max_history > 0 {
+                                            tstore.prune_runs(&event.workspace_id, &event.trigger_id, trigger.max_history as usize).await.ok();
+                                        }
+                                        info!(trigger_id = %event.trigger_id, status = %run.status, "trigger executed");
+                                    }
+                                    Err(e) => {
+                                        warn!(trigger_id = %event.trigger_id, err = %e, "trigger not found for execution");
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
             } else {
                 tracing::debug!(method = %method, "unhandled notification");
@@ -1484,6 +1628,227 @@ async fn handle_jobs_trigger(
 }
 
 // ---------------------------------------------------------------------------
+// Triggers ACP handlers
+// ---------------------------------------------------------------------------
+
+/// Helper: get the trigger store or return a JSON-RPC error.
+macro_rules! require_trigger_store {
+    ($state:expr, $id:expr) => {
+        match $state.trigger_store.as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                return $state
+                    .sender
+                    .send_error(
+                        $id,
+                        agent_core::transport::error_codes::INTERNAL_ERROR,
+                        "trigger store not configured".to_string(),
+                    )
+                    .await;
+            }
+        }
+    };
+}
+
+async fn handle_triggers_create(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let name = require_param_str!(params, "name", id, state);
+    let prompt_template = require_param_str!(params, "prompt_template", id, state);
+
+    let p = params.as_ref();
+    let rate_limit_per_minute = p
+        .and_then(|p| p.get("rate_limit_per_minute"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(60) as u32;
+    let notify = p
+        .and_then(|p| p.get("notify"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let max_history = p
+        .and_then(|p| p.get("max_history"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as u32;
+    let hmac_secret = p
+        .and_then(|p| p.get("hmac_secret"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let accepted_content_types: Vec<String> = p
+        .and_then(|p| p.get("accepted_content_types"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now();
+    let trigger = TriggerDefinition {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        prompt_template,
+        token: agent_core::trigger::generate_token(),
+        enabled: true,
+        notify,
+        max_history,
+        rate_limit_per_minute,
+        hmac_secret,
+        accepted_content_types,
+        created_at: now,
+        updated_at: now,
+        last_event_at: None,
+    };
+
+    let created = store.create_trigger(&workspace_id, &trigger).await
+        .context("failed to create trigger")?;
+
+    let result = serde_json::to_value(&created)
+        .context("failed to serialize trigger")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_triggers_list(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+
+    let triggers = store.list_triggers(&workspace_id).await
+        .context("failed to list triggers")?;
+
+    let summaries: Vec<TriggerSummary> = triggers.iter().map(TriggerSummary::from).collect();
+    let result = serde_json::to_value(&summaries)
+        .context("failed to serialize trigger list")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_triggers_get(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let trigger_id = require_param_str!(params, "trigger_id", id, state);
+
+    let trigger = store.get_trigger(&workspace_id, &trigger_id).await
+        .context("trigger not found")?;
+
+    let result = serde_json::to_value(&trigger)
+        .context("failed to serialize trigger")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_triggers_update(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let trigger_id = require_param_str!(params, "trigger_id", id, state);
+
+    let mut trigger = store.get_trigger(&workspace_id, &trigger_id).await
+        .context("trigger not found")?;
+
+    let p = params.as_ref();
+    if let Some(name) = p.and_then(|p| p.get("name")).and_then(|v| v.as_str()) {
+        trigger.name = name.to_string();
+    }
+    if let Some(pt) = p.and_then(|p| p.get("prompt_template")).and_then(|v| v.as_str()) {
+        trigger.prompt_template = pt.to_string();
+    }
+    if let Some(enabled) = p.and_then(|p| p.get("enabled")).and_then(|v| v.as_bool()) {
+        trigger.enabled = enabled;
+    }
+    if let Some(notify) = p.and_then(|p| p.get("notify")).and_then(|v| v.as_bool()) {
+        trigger.notify = notify;
+    }
+    if let Some(rl) = p.and_then(|p| p.get("rate_limit_per_minute")).and_then(|v| v.as_u64()) {
+        trigger.rate_limit_per_minute = rl as u32;
+    }
+    if let Some(mh) = p.and_then(|p| p.get("max_history")).and_then(|v| v.as_u64()) {
+        trigger.max_history = mh as u32;
+    }
+    if let Some(sec) = p.and_then(|p| p.get("hmac_secret")) {
+        trigger.hmac_secret = if sec.is_null() {
+            None
+        } else {
+            sec.as_str().map(|s| s.to_string())
+        };
+    }
+    if let Some(cts) = p.and_then(|p| p.get("accepted_content_types")).and_then(|v| v.as_array()) {
+        trigger.accepted_content_types = cts.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+    }
+    trigger.updated_at = chrono::Utc::now();
+
+    let updated = store.update_trigger(&workspace_id, &trigger).await
+        .context("failed to update trigger")?;
+
+    let result = serde_json::to_value(&updated)
+        .context("failed to serialize trigger")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_triggers_delete(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let trigger_id = require_param_str!(params, "trigger_id", id, state);
+
+    store.delete_trigger(&workspace_id, &trigger_id).await
+        .context("failed to delete trigger")?;
+
+    state.sender.send_response(id, serde_json::json!({})).await
+}
+
+async fn handle_triggers_history(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let trigger_id = require_param_str!(params, "trigger_id", id, state);
+
+    let limit = params
+        .as_ref()
+        .and_then(|p| p.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+
+    let runs = store.list_runs(&workspace_id, &trigger_id, limit).await
+        .context("failed to list trigger runs")?;
+
+    let result = serde_json::to_value(&runs)
+        .context("failed to serialize runs")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_triggers_regenerate_token(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_trigger_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let trigger_id = require_param_str!(params, "trigger_id", id, state);
+
+    let trigger = store.regenerate_token(&workspace_id, &trigger_id).await
+        .context("failed to regenerate token")?;
+
+    let result = serde_json::to_value(&trigger)
+        .context("failed to serialize trigger")?;
+    state.sender.send_response(id, result).await
+}
+
+// ---------------------------------------------------------------------------
 // Chat REPL mode
 // ---------------------------------------------------------------------------
 
@@ -2274,6 +2639,218 @@ async fn run_jobs_command(action: JobsAction, config: AgentConfig) -> Result<()>
                 .with_context(|| format!("job '{}' not found", job_id))?;
             store.delete_job(&ws_id, &job_id).await?;
             println!("🗑  Deleted job '{}' ({}).", job.name, job_id);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Triggers CLI commands
+// ---------------------------------------------------------------------------
+
+async fn run_triggers_command(action: TriggersAction, config: AgentConfig) -> Result<()> {
+    let data_dir = AgentConfig::data_dir()
+        .context("failed to determine data directory")?;
+    let store = Arc::new(
+        FsTriggerStore::new(&data_dir).context("failed to initialize trigger store")?,
+    );
+
+    let runtime = build_runtime(config).await?;
+
+    // Inline helper: resolve workspace UUID or fall back to default
+    macro_rules! resolve_ws {
+        ($opt:expr) => {
+            if let Some(id) = $opt {
+                id
+            } else {
+                runtime.workspace_manager().default().await?.uuid
+            }
+        };
+    }
+
+    match action {
+        TriggersAction::List { workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let triggers = store.list_triggers(&ws_id).await?;
+
+            if triggers.is_empty() {
+                println!("No webhook triggers in workspace {}.", ws_id);
+            } else {
+                println!(
+                    "{:<38} {:<24} {:<10} {}",
+                    "ID", "NAME", "STATUS", "LAST EVENT"
+                );
+                println!("{}", "-".repeat(90));
+                for t in &triggers {
+                    let status = if t.enabled { "active" } else { "disabled" };
+                    let last_event = t
+                        .last_event_at
+                        .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "never".to_string());
+                    println!(
+                        "{:<38} {:<24} {:<10} {}",
+                        t.id,
+                        &t.name[..t.name.len().min(23)],
+                        status,
+                        last_event,
+                    );
+                }
+            }
+        }
+
+        TriggersAction::Create {
+            name,
+            prompt,
+            rate_limit,
+            hmac_secret,
+            content_types,
+            workspace,
+        } => {
+            let ws_id = resolve_ws!(workspace);
+            let accepted_content_types: Vec<String> = content_types
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let now = chrono::Utc::now();
+            let trigger = TriggerDefinition {
+                id: Uuid::new_v4().to_string(),
+                name: name.clone(),
+                prompt_template: prompt,
+                token: agent_core::trigger::generate_token(),
+                enabled: true,
+                notify: true,
+                max_history: 20,
+                rate_limit_per_minute: rate_limit,
+                hmac_secret,
+                accepted_content_types,
+                created_at: now,
+                updated_at: now,
+                last_event_at: None,
+            };
+
+            let created = store.create_trigger(&ws_id, &trigger).await?;
+            println!("✅ Created trigger: {}", created.id);
+            println!("   Name:      {}", created.name);
+            println!("   Token:     {}", created.token);
+            println!("   Workspace: {}", ws_id);
+            println!("\nWebhook URL (when served): /webhook/{}", created.token);
+        }
+
+        TriggersAction::Show { trigger_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let t = store.get_trigger(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+
+            println!("Trigger: {}", t.id);
+            println!("  Name:          {}", t.name);
+            println!("  Enabled:       {}", t.enabled);
+            println!("  Notify:        {}", t.notify);
+            println!("  Rate limit:    {}/min", t.rate_limit_per_minute);
+            println!("  Max history:   {}", t.max_history);
+            if let Some(ref s) = t.hmac_secret {
+                println!("  HMAC secret:   {} (set)", s.chars().take(4).collect::<String>());
+            }
+            if !t.accepted_content_types.is_empty() {
+                println!("  Content types: {}", t.accepted_content_types.join(", "));
+            }
+            println!("  Created:       {}", t.created_at.format("%Y-%m-%d %H:%M:%S"));
+            if let Some(ts) = t.last_event_at {
+                println!("  Last event:    {}", ts.format("%Y-%m-%d %H:%M:%S"));
+            }
+            println!("  Token:         {}", t.token);
+            println!("\nPrompt template:\n{}", t.prompt_template);
+
+            let runs = store.list_runs(&ws_id, &trigger_id, 1).await.unwrap_or_default();
+            if let Some(run) = runs.first() {
+                println!("\nLatest run ({}):", run.timestamp.format("%Y-%m-%d %H:%M:%S"));
+                println!("  Status:  {}", run.status);
+                println!("  Payload: {}", run.payload_preview);
+                if !run.output.is_empty() {
+                    println!("\n{}", run.output);
+                }
+                if let Some(ref err) = run.error_message {
+                    println!("  Error: {}", err);
+                }
+            }
+        }
+
+        TriggersAction::Test { trigger_id, payload, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let trigger = store.get_trigger(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+
+            println!("Testing trigger '{}' ({})...", trigger.name, trigger.id);
+
+            let provider = runtime.active_provider()
+                .context("no active LLM provider")?;
+
+            let event = TriggerEvent {
+                trigger_id: trigger.id.clone(),
+                workspace_id: ws_id.clone(),
+                payload: payload.clone(),
+                content_type: "application/json".to_string(),
+                headers: std::collections::HashMap::new(),
+                received_at: chrono::Utc::now(),
+            };
+
+            // Use a placeholder SchedulerStore for the Scheduler constructor
+            let sched_store = Arc::new(
+                FsSchedulerStore::new(&data_dir).context("failed to initialize scheduler store")?
+            );
+            let ws_store = runtime.workspace_manager().workspace_store().clone();
+            let scheduler = Scheduler::new(sched_store, ws_store, provider);
+            let run = scheduler.execute_trigger(&trigger, &event).await;
+
+            store.write_run(&ws_id, &trigger.id, &run).await.ok();
+
+            println!("\nStatus: {} ({} ms)", run.status, run.duration_ms);
+            if !run.output.is_empty() {
+                println!("\n{}", run.output);
+            }
+            if let Some(ref err) = run.error_message {
+                eprintln!("Error: {}", err);
+            }
+        }
+
+        TriggersAction::Enable { trigger_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let mut t = store.get_trigger(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+            t.enabled = true;
+            t.updated_at = chrono::Utc::now();
+            store.update_trigger(&ws_id, &t).await?;
+            println!("✅ Trigger '{}' enabled.", t.name);
+        }
+
+        TriggersAction::Disable { trigger_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let mut t = store.get_trigger(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+            t.enabled = false;
+            t.updated_at = chrono::Utc::now();
+            store.update_trigger(&ws_id, &t).await?;
+            println!("Trigger '{}' disabled.", t.name);
+        }
+
+        TriggersAction::Delete { trigger_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let t = store.get_trigger(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+            store.delete_trigger(&ws_id, &trigger_id).await?;
+            println!("🗑  Deleted trigger '{}' ({}).", t.name, trigger_id);
+        }
+
+        TriggersAction::RegenerateToken { trigger_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let t = store.regenerate_token(&ws_id, &trigger_id).await
+                .with_context(|| format!("trigger '{}' not found", trigger_id))?;
+            println!("✅ Token regenerated for trigger '{}'.", t.name);
+            println!("   New token: {}", t.token);
+            println!("\nNew webhook URL (when served): /webhook/{}", t.token);
         }
     }
 

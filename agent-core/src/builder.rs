@@ -14,6 +14,7 @@ use crate::config::AgentConfig;
 use crate::persistence::SessionStore;
 use crate::plugin::{LlmProvider, Plugin, ToolDefinition};
 use crate::scheduler::SchedulerStore;
+use crate::trigger::TriggerStore;
 use crate::workspace::{WorkspaceManager, WorkspaceStore};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,7 @@ pub struct AgentBuilder {
     session_store: Option<Arc<dyn SessionStore>>,
     binding_store: Option<Arc<dyn BindingStore>>,
     scheduler_store: Option<Arc<dyn SchedulerStore>>,
+    trigger_store: Option<Arc<dyn TriggerStore>>,
     plugins: Vec<Box<dyn Plugin>>,
     config: AgentConfig,
 }
@@ -45,6 +47,7 @@ impl AgentBuilder {
             session_store: None,
             binding_store: None,
             scheduler_store: None,
+            trigger_store: None,
             plugins: Vec::new(),
             config,
         }
@@ -82,6 +85,13 @@ impl AgentBuilder {
     /// If not provided, the scheduler is disabled.
     pub fn with_scheduler_store(mut self, store: Arc<dyn SchedulerStore>) -> Self {
         self.scheduler_store = Some(store);
+        self
+    }
+
+    /// Set the webhook trigger storage backend.
+    /// If not provided, webhook triggers are disabled.
+    pub fn with_trigger_store(mut self, store: Arc<dyn TriggerStore>) -> Self {
+        self.trigger_store = Some(store);
         self
     }
 
@@ -129,6 +139,7 @@ impl AgentBuilder {
             active_provider: active,
             workspace_manager,
             scheduler_store: self.scheduler_store,
+            trigger_store: self.trigger_store,
             plugins: self.plugins,
             config: self.config,
             tools: Vec::new(),
@@ -148,6 +159,7 @@ pub struct AgentRuntime {
     active_provider: String,
     workspace_manager: WorkspaceManager,
     scheduler_store: Option<Arc<dyn SchedulerStore>>,
+    trigger_store: Option<Arc<dyn TriggerStore>>,
     plugins: Vec<Box<dyn Plugin>>,
     config: AgentConfig,
     tools: Vec<ToolDefinition>,
@@ -194,6 +206,11 @@ impl AgentRuntime {
     /// Access the scheduler store (if configured).
     pub fn scheduler_store(&self) -> Option<&Arc<dyn SchedulerStore>> {
         self.scheduler_store.as_ref()
+    }
+
+    /// Access the trigger store (if configured).
+    pub fn trigger_store(&self) -> Option<&Arc<dyn TriggerStore>> {
+        self.trigger_store.as_ref()
     }
 
     /// Access all registered LLM providers.

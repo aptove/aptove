@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use agent_core::plugin::{LlmProvider, Message, MessageContent, Role};
 use agent_core::scheduler::{JobDefinition, JobRun, JobStatus, SchedulerStore};
+use agent_core::trigger::{render_template, TriggerDefinition, TriggerEvent, TriggerRun, TriggerStatus};
 use agent_core::workspace::WorkspaceStore;
 use agent_core::agent_loop::{AgentLoopConfig, run_agent_loop};
 
@@ -37,7 +38,8 @@ use agent_core::agent_loop::{AgentLoopConfig, run_agent_loop};
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Background scheduler that fires jobs on their cron schedules.
+/// Background scheduler that fires jobs on their cron schedules and
+/// executes webhook trigger events.
 pub struct Scheduler {
     store: Arc<dyn SchedulerStore>,
     workspace_store: Arc<dyn WorkspaceStore>,
@@ -59,6 +61,44 @@ impl Scheduler {
             store,
             workspace_store,
             provider,
+        }
+    }
+
+    /// Execute a webhook trigger event immediately (called by the ACP handler).
+    ///
+    /// Renders the trigger's prompt template with the event payload, sends it
+    /// to the LLM provider, and returns a `TriggerRun` recording the outcome.
+    pub async fn execute_trigger(
+        &self,
+        trigger: &TriggerDefinition,
+        event: &TriggerEvent,
+    ) -> TriggerRun {
+        let rendered_prompt = render_template(&trigger.prompt_template, event, &trigger.name);
+        let run_result = execute_prompt(&self.provider, &rendered_prompt).await;
+
+        let payload_preview: String = event.payload.chars().take(200).collect();
+
+        match run_result {
+            Ok((output, duration_ms)) => TriggerRun {
+                trigger_id: trigger.id.clone(),
+                timestamp: event.received_at,
+                status: TriggerStatus::Success,
+                payload_preview,
+                output,
+                duration_ms,
+                error_message: None,
+                source_ip: None,
+            },
+            Err((err_msg, duration_ms)) => TriggerRun {
+                trigger_id: trigger.id.clone(),
+                timestamp: event.received_at,
+                status: TriggerStatus::Error,
+                payload_preview,
+                output: String::new(),
+                duration_ms,
+                error_message: Some(err_msg),
+                source_ip: None,
+            },
         }
     }
 
@@ -277,38 +317,38 @@ async fn tick(
 }
 
 // ---------------------------------------------------------------------------
-// Job execution
+// Shared execution engine
 // ---------------------------------------------------------------------------
 
-/// Execute a single job by sending its prompt to the LLM provider and
-/// collecting the response. Returns a [`JobRun`] recording the outcome.
-async fn execute_job(provider: &Arc<dyn LlmProvider>, job: &JobDefinition) -> JobRun {
+/// Send `prompt` to the LLM provider and collect the full response text.
+///
+/// Returns `Ok((output, duration_ms))` on success or
+/// `Err((error_message, duration_ms))` on failure.
+async fn execute_prompt(
+    provider: &Arc<dyn LlmProvider>,
+    prompt: &str,
+) -> Result<(String, u64), (String, u64)> {
     let start = Instant::now();
-    let timestamp = Utc::now();
     let run_id = Uuid::new_v4().to_string();
-
-    info!(job = %job.id, run = %run_id, "starting job execution");
 
     let messages = vec![Message {
         role: Role::User,
-        content: MessageContent::Text(job.prompt.clone()),
+        content: MessageContent::Text(prompt.to_string()),
     }];
 
     let cancel = tokio_util::sync::CancellationToken::new();
-    let config = AgentLoopConfig {
-        max_iterations: 25,
-    };
+    let config = AgentLoopConfig { max_iterations: 25 };
 
     match run_agent_loop(
         provider.clone(),
         &messages,
-        &[], // no tools during scheduled jobs (initial implementation)
+        &[],
         None,
         &config,
         cancel,
-        None, // no streaming transport
+        None,
         &run_id,
-        None, // no plugin_host
+        None,
     )
     .await
     {
@@ -322,29 +362,40 @@ async fn execute_job(provider: &Arc<dyn LlmProvider>, job: &JobDefinition) -> Jo
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            JobRun {
-                job_id: job.id.clone(),
-                timestamp,
-                status: JobStatus::Success,
-                output,
-                duration_ms,
-                error_message: None,
-            }
+            Ok((output, start.elapsed().as_millis() as u64))
         }
-        Err(e) => {
-            let duration_ms = start.elapsed().as_millis() as u64;
-            error!(job = %job.id, err = %e, "job execution failed");
+        Err(e) => Err((e.to_string(), start.elapsed().as_millis() as u64)),
+    }
+}
 
+// ---------------------------------------------------------------------------
+// Job execution
+// ---------------------------------------------------------------------------
+
+/// Execute a single job by sending its prompt to the LLM provider.
+/// Returns a [`JobRun`] recording the outcome.
+async fn execute_job(provider: &Arc<dyn LlmProvider>, job: &JobDefinition) -> JobRun {
+    let timestamp = Utc::now();
+    info!(job = %job.id, "starting job execution");
+
+    match execute_prompt(provider, &job.prompt).await {
+        Ok((output, duration_ms)) => JobRun {
+            job_id: job.id.clone(),
+            timestamp,
+            status: JobStatus::Success,
+            output,
+            duration_ms,
+            error_message: None,
+        },
+        Err((err_msg, duration_ms)) => {
+            error!(job = %job.id, err = %err_msg, "job execution failed");
             JobRun {
                 job_id: job.id.clone(),
                 timestamp,
                 status: JobStatus::Error,
                 output: String::new(),
                 duration_ms,
-                error_message: Some(e.to_string()),
+                error_message: Some(err_msg),
             }
         }
     }
