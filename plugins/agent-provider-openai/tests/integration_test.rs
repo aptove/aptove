@@ -1,4 +1,5 @@
-use agent_core::plugin::{LlmProvider, Message, MessageContent, Role, StopReason, ToolDefinition};
+use agent_core::provider::{LlmProvider, StopReason};
+use agent_core::types::{Message, MessageContent, Role, ToolDefinition};
 use agent_provider_openai::OpenAiProvider;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -151,8 +152,8 @@ async fn test_stream_callback_receives_delta() {
     let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let clone = collected.clone();
 
-    let cb: agent_core::plugin::StreamCallback = std::sync::Arc::new(move |event| {
-        if let agent_core::plugin::StreamEvent::TextDelta(t) = event {
+    let cb: agent_core::provider::StreamCallback = std::sync::Arc::new(move |event| {
+        if let agent_core::provider::StreamEvent::TextDelta(t) = event {
             clone.lock().unwrap().push(t);
         }
     });

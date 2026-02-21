@@ -9,7 +9,7 @@ use tracing::debug;
 use agent_core::persistence::{
     parse_session, serialize_message, serialize_session, SessionData, SessionStore,
 };
-use agent_core::plugin::Message;
+use agent_core::types::Message;
 
 // ---------------------------------------------------------------------------
 // FsSessionStore
@@ -122,7 +122,7 @@ impl SessionStore for FsSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::plugin::{MessageContent, Role};
+    use agent_core::types::{MessageContent, Role, ToolCallResult};
 
     fn text_msg(role: Role, text: &str) -> Message {
         Message {
@@ -204,7 +204,7 @@ mod tests {
                 "test-ws",
                 &Message {
                     role: Role::Tool,
-                    content: MessageContent::ToolResult(agent_core::plugin::ToolCallResult {
+                    content: MessageContent::ToolResult(ToolCallResult {
                         tool_call_id: "tc1".into(),
                         content: "result".into(),
                         is_error: false,

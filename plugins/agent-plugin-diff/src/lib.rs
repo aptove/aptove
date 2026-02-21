@@ -30,7 +30,8 @@ use regex::Regex;
 use similar::TextDiff;
 use tracing::{debug, info, warn};
 
-use agent_core::plugin::{Plugin, ToolCallRequest};
+use agent_core::plugin::Plugin;
+use agent_core::types::ToolCallRequest;
 
 // ---------------------------------------------------------------------------
 // Tool detection constants
@@ -641,7 +642,7 @@ impl Plugin for DiffPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::plugin::ToolCallRequest;
+    use agent_core::types::ToolCallRequest;
     use tempfile::NamedTempFile;
 
     // -----------------------------------------------------------------------

@@ -28,7 +28,8 @@ use cron::Schedule;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use agent_core::plugin::{LlmProvider, Message, MessageContent, Role};
+use agent_core::provider::LlmProvider;
+use agent_core::types::{Message, MessageContent, Role};
 use agent_core::scheduler::{JobDefinition, JobRun, JobStatus, SchedulerStore};
 use agent_core::trigger::{render_template, TriggerDefinition, TriggerEvent, TriggerRun, TriggerStatus};
 use agent_core::workspace::WorkspaceStore;
@@ -337,7 +338,7 @@ async fn execute_prompt(
     }];
 
     let cancel = tokio_util::sync::CancellationToken::new();
-    let config = AgentLoopConfig { max_iterations: 25 };
+    let config = AgentLoopConfig { max_iterations: 25, ..AgentLoopConfig::default() };
 
     match run_agent_loop(
         provider.clone(),

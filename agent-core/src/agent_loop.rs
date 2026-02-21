@@ -14,12 +14,12 @@ use agent_client_protocol_schema::{
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 
-use crate::plugin::{
-    LlmProvider, Message, MessageContent, OutputChunk, Role, StopReason, StreamCallback,
-    StreamEvent, ToolCallRequest, ToolCallResult, ToolDefinition, TokenUsage,
-};
-use crate::plugin::PluginHost;
+use crate::builder::AgentRuntime;
+use crate::plugin::OutputChunk;
+use crate::provider::{LlmProvider, StopReason, StreamCallback, StreamEvent, TokenUsage};
+use crate::retry::{RetryPolicy, with_retry};
 use crate::transport::TransportSender;
+use crate::types::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult, ToolDefinition};
 
 // Note: Provider is passed as Arc<dyn LlmProvider> — no RwLock needed
 // since the provider for a given execution is fixed.
@@ -42,12 +42,15 @@ pub type ToolExecutor =
 pub struct AgentLoopConfig {
     /// Maximum tool-call iterations before forced stop (default 25).
     pub max_iterations: usize,
+    /// Retry policy for LLM provider calls.
+    pub retry_policy: RetryPolicy,
 }
 
 impl Default for AgentLoopConfig {
     fn default() -> Self {
         Self {
             max_iterations: 25,
+            retry_policy: RetryPolicy::default(),
         }
     }
 }
@@ -81,7 +84,7 @@ pub async fn run_agent_loop(
     cancel_token: CancellationToken,
     transport: Option<TransportSender>,
     session_id: &str,
-    plugin_host: Option<&PluginHost>,
+    runtime: Option<&AgentRuntime>,
 ) -> Result<AgentLoopResult> {
     let mut all_messages: Vec<Message> = messages.to_vec();
     let mut new_messages: Vec<Message> = Vec::new();
@@ -121,22 +124,25 @@ pub async fn run_agent_loop(
         iterations += 1;
         debug!(session_id, iteration = iterations, "agent loop iteration");
 
-        // Build streaming callback that forwards to transport
-        let stream_cb: Option<StreamCallback> = transport.as_ref().map(|tx| {
-            let tx = tx.clone();
-            let sid = session_id.to_string();
-            Arc::new(move |event: StreamEvent| {
-                let tx = tx.clone();
-                let sid = sid.clone();
-                tokio::spawn(async move {
-                    let _ = emit_stream_event(&tx, &sid, &event).await;
-                });
-            }) as StreamCallback
-        });
-
-        // Call the LLM
+        // Call the LLM with retry
         info!(iteration = iterations, tool_count = tools.len(), message_count = all_messages.len(), "calling LLM provider");
-        let response = provider.complete(&all_messages, tools, stream_cb).await?;
+        let response = with_retry(&config.retry_policy, "llm_complete", || {
+            let stream_cb: Option<StreamCallback> = transport.as_ref().map(|tx| {
+                let tx = tx.clone();
+                let sid = session_id.to_string();
+                Arc::new(move |event: StreamEvent| {
+                    let tx = tx.clone();
+                    let sid = sid.clone();
+                    tokio::spawn(async move {
+                        let _ = emit_stream_event(&tx, &sid, &event).await;
+                    });
+                }) as StreamCallback
+            });
+            let msgs = all_messages.clone();
+            let tools_vec = tools.to_vec();
+            let provider = provider.clone();
+            async move { provider.complete(&msgs, &tools_vec, stream_cb).await }
+        }).await?;
 
         // Accumulate usage
         total_usage.input_tokens += response.usage.input_tokens;
@@ -149,12 +155,12 @@ pub async fn run_agent_loop(
             let mut final_text = response.content.clone();
 
             // Run on_output_chunk hook
-            if let Some(host) = plugin_host {
+            if let Some(rt) = runtime {
                 let mut chunk = OutputChunk {
                     text: final_text.clone(),
                     is_final: response.tool_calls.is_empty(),
                 };
-                if let Err(e) = host.run_output_chunk(&mut chunk).await {
+                if let Err(e) = rt.run_output_chunk(&mut chunk).await {
                     warn!(session_id, err = %e, "on_output_chunk hook error");
                 }
                 final_text = chunk.text;
@@ -215,8 +221,8 @@ pub async fn run_agent_loop(
             let mut call = call.clone();
 
             // Run on_before_tool_call hook
-            if let Some(host) = plugin_host {
-                if let Err(e) = host.run_before_tool_call(&mut call).await {
+            if let Some(rt) = runtime {
+                if let Err(e) = rt.run_before_tool_call(&mut call).await {
                     warn!(session_id, tool = %call.name, err = %e, "on_before_tool_call hook error");
                 }
             }
@@ -265,8 +271,8 @@ pub async fn run_agent_loop(
             );
 
             // Run on_after_tool_call hook
-            if let Some(host) = plugin_host {
-                if let Err(e) = host.run_after_tool_call(&call, &mut result).await {
+            if let Some(rt) = runtime {
+                if let Err(e) = rt.run_after_tool_call(&call, &mut result).await {
                     warn!(session_id, tool = %call.name, err = %e, "on_after_tool_call hook error");
                 }
             }
@@ -366,8 +372,9 @@ async fn emit_stream_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::*;
     use async_trait::async_trait;
+    use crate::provider::{LlmProvider, LlmResponse, ModelInfo, StopReason, StreamCallback, TokenUsage};
+    use crate::types::{Message, MessageContent, Role, ToolCallRequest, ToolDefinition};
 
     struct MockProvider {
         responses: std::sync::Mutex<Vec<LlmResponse>>,
@@ -483,7 +490,7 @@ mod tests {
 
         let provider: Arc<dyn LlmProvider> = Arc::new(AlwaysToolsProvider);
 
-        let config = AgentLoopConfig { max_iterations: 3 };
+        let config = AgentLoopConfig { max_iterations: 3, ..AgentLoopConfig::default() };
 
         let result = run_agent_loop(
             provider,

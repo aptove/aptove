@@ -8,10 +8,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use tracing::{debug, info, warn};
 
-use agent_core::plugin::{
-    LlmProvider, LlmResponse, Message, MessageContent, ModelInfo, Role, StopReason,
-    StreamCallback, StreamEvent, ToolCallRequest, ToolDefinition, TokenUsage,
+use agent_core::provider::{
+    LlmProvider, LlmResponse, ModelInfo, StopReason, StreamCallback, StreamEvent, TokenUsage,
 };
+use agent_core::types::{Message, MessageContent, Role, ToolCallRequest, ToolDefinition};
 
 // ---------------------------------------------------------------------------
 // Provider

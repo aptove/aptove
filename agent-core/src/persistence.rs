@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::plugin::{Message, MessageContent, Role};
+use crate::types::{Message, MessageContent, Role};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn serialize_skips_tool_messages() {
-        use crate::plugin::{ToolCallRequest, ToolCallResult};
+        use crate::types::{ToolCallRequest, ToolCallResult};
 
         let mut data = SessionData::new("claude", "sonnet");
         data.messages.push(text_msg(Role::User, "Run ls"));

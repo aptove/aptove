@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use tracing::{debug, info};
 
-use crate::plugin::{Message, MessageContent, Role};
+use crate::types::{Message, MessageContent, Role};
 
 // ---------------------------------------------------------------------------
 // System Prompt Manager

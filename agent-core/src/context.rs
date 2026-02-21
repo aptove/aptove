@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::plugin::{Message, MessageContent, PluginHost, Role};
+use crate::types::{Message, MessageContent, Role};
 
 // ---------------------------------------------------------------------------
 // Context display info
@@ -182,7 +182,7 @@ impl ContextWindow {
     /// Compact with plugin strategy override. If a plugin provides
     /// replacement messages via `on_context_compact`, those are used
     /// instead of the default drop-oldest strategy.
-    pub async fn compact_with_plugins(&mut self, plugin_host: &PluginHost) -> usize {
+    pub async fn compact_with_plugins(&mut self, runtime: &crate::builder::AgentRuntime) -> usize {
         let target = (self.max_tokens as f64 * self.compact_target) as usize;
 
         if self.total_tokens <= target {
@@ -198,7 +198,7 @@ impl ContextWindow {
             .collect();
 
         // Ask plugins for a replacement
-        match plugin_host.run_context_compact(&droppable, target).await {
+        match runtime.run_context_compact(&droppable, target).await {
             Ok(Some(replacement)) => {
                 // Plugin provided replacement messages — rebuild context
                 // Keep system messages, then insert replacements
@@ -341,7 +341,7 @@ impl ContextWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{Message, MessageContent, Role};
+    use crate::types::{Message, MessageContent, Role};
 
     fn text_msg(role: Role, text: &str) -> Message {
         Message {

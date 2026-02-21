@@ -179,7 +179,7 @@ impl StdioTransport {
     }
 
     /// Get a cloneable sender handle for writing to stdout.
-    pub fn sender(&self) -> TransportSender {
+    pub fn get_sender(&self) -> TransportSender {
         self.sender.clone()
     }
 
@@ -301,7 +301,7 @@ impl InProcessTransport {
     }
 
     /// Get a cloneable sender handle.
-    pub fn sender(&self) -> TransportSender {
+    pub fn get_sender(&self) -> TransportSender {
         self.sender.clone()
     }
 
@@ -355,6 +355,39 @@ impl InProcessTransport {
 }
 
 
+// ---------------------------------------------------------------------------
+// Transport trait
+// ---------------------------------------------------------------------------
+
+/// Common interface for ACP transports.
+#[async_trait::async_trait]
+pub trait Transport: Send {
+    /// Get a cloneable sender handle.
+    fn sender(&self) -> TransportSender;
+    /// Receive the next incoming message. Returns `None` when the source closes.
+    async fn recv(&mut self) -> Option<IncomingMessage>;
+}
+
+#[async_trait::async_trait]
+impl Transport for StdioTransport {
+    fn sender(&self) -> TransportSender {
+        self.sender.clone()
+    }
+    async fn recv(&mut self) -> Option<IncomingMessage> {
+        self.incoming_rx.recv().await
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for InProcessTransport {
+    fn sender(&self) -> TransportSender {
+        self.sender.clone()
+    }
+    async fn recv(&mut self) -> Option<IncomingMessage> {
+        self.incoming_rx.recv().await
+    }
+}
+
 pub mod error_codes {
     pub const PARSE_ERROR: i32 = -32700;
     pub const INVALID_REQUEST: i32 = -32600;
@@ -406,7 +439,7 @@ mod tests {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
 
         let mut transport = InProcessTransport::new(in_rx, out_tx);
-        let sender = transport.sender();
+        let sender = transport.get_sender();
 
         // Send a request message via the input channel.
         let msg = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n".to_vec();

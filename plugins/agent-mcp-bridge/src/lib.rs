@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use agent_core::config::McpServerConfig;
-use agent_core::plugin::{Plugin, ToolCallRequest, ToolCallResult, ToolDefinition};
+use agent_core::plugin::Plugin;
+use agent_core::types::{ToolCallRequest, ToolCallResult, ToolDefinition};
 
 // ---------------------------------------------------------------------------
 // MCP Client

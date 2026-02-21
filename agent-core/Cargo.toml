@@ -15,7 +15,6 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 chrono.workspace = true
@@ -24,6 +23,7 @@ futures.workspace = true
 tokio-util.workspace = true
 which.workspace = true
 rand.workspace = true
+cron.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

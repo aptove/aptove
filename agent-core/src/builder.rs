@@ -12,9 +12,11 @@ use anyhow::Result;
 use crate::bindings::BindingStore;
 use crate::config::AgentConfig;
 use crate::persistence::SessionStore;
-use crate::plugin::{LlmProvider, Plugin, ToolDefinition};
+use crate::plugin::{OutputChunk, Plugin};
+use crate::provider::LlmProvider;
 use crate::scheduler::SchedulerStore;
 use crate::trigger::TriggerStore;
+use crate::types::ToolDefinition;
 use crate::workspace::{WorkspaceManager, WorkspaceStore};
 
 // ---------------------------------------------------------------------------
@@ -256,6 +258,53 @@ impl AgentRuntime {
         }
         Ok(())
     }
+
+    /// Run `on_before_tool_call` on all plugins.
+    pub async fn run_before_tool_call(&self, call: &mut crate::types::ToolCallRequest) -> Result<()> {
+        for plugin in &self.plugins {
+            plugin.on_before_tool_call(call).await?;
+        }
+        Ok(())
+    }
+
+    /// Run `on_after_tool_call` on all plugins.
+    pub async fn run_after_tool_call(&self, call: &crate::types::ToolCallRequest, result: &mut crate::types::ToolCallResult) -> Result<()> {
+        for plugin in &self.plugins {
+            plugin.on_after_tool_call(call, result).await?;
+        }
+        Ok(())
+    }
+
+    /// Run `on_output_chunk` on all plugins.
+    pub async fn run_output_chunk(&self, chunk: &mut OutputChunk) -> Result<()> {
+        for plugin in &self.plugins {
+            plugin.on_output_chunk(chunk).await?;
+        }
+        Ok(())
+    }
+
+    /// Run `on_context_compact` on all plugins. Returns first Some() result.
+    pub async fn run_context_compact(&self, messages: &[crate::types::Message], target_tokens: usize) -> Result<Option<Vec<crate::types::Message>>> {
+        for plugin in &self.plugins {
+            if let Some(replacement) = plugin.on_context_compact(messages, target_tokens).await? {
+                return Ok(Some(replacement));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Run `on_session_start` on all plugins.
+    pub async fn run_session_start(&self, session: &mut crate::session::Session) -> Result<()> {
+        for plugin in &self.plugins {
+            plugin.on_session_start(session).await?;
+        }
+        Ok(())
+    }
+
+    /// Access registered plugins (for testing/inspection).
+    pub fn plugins(&self) -> &[Box<dyn Plugin>] {
+        &self.plugins
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +316,8 @@ mod tests {
     use super::*;
     use crate::bindings::BindingStore;
     use crate::persistence::{SessionData, SessionStore};
-    use crate::plugin::{
-        LlmProvider, LlmResponse, Message, ModelInfo, StopReason, StreamCallback, ToolDefinition,
-        TokenUsage,
-    };
+    use crate::provider::{LlmProvider, LlmResponse, ModelInfo, StopReason, StreamCallback, TokenUsage};
+    use crate::types::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult, ToolDefinition};
 
     // -- Mock implementations ----------------------------------------------
 
@@ -455,5 +502,346 @@ mod tests {
         assert_eq!(runtime.tools().len(), 1);
         runtime.remove_tools_by_prefix("bash_");
         assert!(runtime.tools().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Hook dispatch tests (moved from plugin.rs)
+    // -----------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::plugin::{OutputChunk, Plugin};
+
+    fn build_test_runtime() -> AgentRuntime {
+        AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .build()
+            .unwrap()
+    }
+
+    struct RecordingPlugin {
+        plugin_name: String,
+        call_order: Arc<AtomicUsize>,
+        before_order: Arc<std::sync::Mutex<Option<usize>>>,
+        after_order: Arc<std::sync::Mutex<Option<usize>>>,
+        output_order: Arc<std::sync::Mutex<Option<usize>>>,
+        session_start_order: Arc<std::sync::Mutex<Option<usize>>>,
+    }
+
+    impl RecordingPlugin {
+        fn new(name: &str, counter: Arc<AtomicUsize>) -> Self {
+            Self {
+                plugin_name: name.to_string(),
+                call_order: counter,
+                before_order: Arc::new(std::sync::Mutex::new(None)),
+                after_order: Arc::new(std::sync::Mutex::new(None)),
+                output_order: Arc::new(std::sync::Mutex::new(None)),
+                session_start_order: Arc::new(std::sync::Mutex::new(None)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Plugin for RecordingPlugin {
+        fn name(&self) -> &str {
+            &self.plugin_name
+        }
+
+        async fn on_before_tool_call(&self, call: &mut ToolCallRequest) -> anyhow::Result<()> {
+            let order = self.call_order.fetch_add(1, Ordering::SeqCst);
+            *self.before_order.lock().unwrap() = Some(order);
+            call.arguments = serde_json::json!({
+                "modified_by": self.plugin_name,
+                "original": call.arguments,
+            });
+            Ok(())
+        }
+
+        async fn on_after_tool_call(
+            &self,
+            _call: &ToolCallRequest,
+            result: &mut ToolCallResult,
+        ) -> anyhow::Result<()> {
+            let order = self.call_order.fetch_add(1, Ordering::SeqCst);
+            *self.after_order.lock().unwrap() = Some(order);
+            result.content.push_str(&format!(" [after:{}]", self.plugin_name));
+            Ok(())
+        }
+
+        async fn on_output_chunk(&self, chunk: &mut OutputChunk) -> anyhow::Result<()> {
+            let order = self.call_order.fetch_add(1, Ordering::SeqCst);
+            *self.output_order.lock().unwrap() = Some(order);
+            chunk.text = format!("[{}]{}", self.plugin_name, chunk.text);
+            Ok(())
+        }
+
+        async fn on_session_start(
+            &self,
+            _session: &mut crate::session::Session,
+        ) -> anyhow::Result<()> {
+            let order = self.call_order.fetch_add(1, Ordering::SeqCst);
+            *self.session_start_order.lock().unwrap() = Some(order);
+            Ok(())
+        }
+    }
+
+    struct SummarizerPlugin;
+
+    #[async_trait::async_trait]
+    impl Plugin for SummarizerPlugin {
+        fn name(&self) -> &str {
+            "summarizer"
+        }
+
+        async fn on_context_compact(
+            &self,
+            messages: &[Message],
+            _target_tokens: usize,
+        ) -> anyhow::Result<Option<Vec<Message>>> {
+            let summary = format!("[summary of {} messages]", messages.len());
+            Ok(Some(vec![Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(summary),
+            }]))
+        }
+    }
+
+    #[tokio::test]
+    async fn hooks_called_in_registration_order() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let plugin_a = RecordingPlugin::new("alpha", counter.clone());
+        let a_before = plugin_a.before_order.clone();
+        let a_after = plugin_a.after_order.clone();
+
+        let plugin_b = RecordingPlugin::new("beta", counter.clone());
+        let b_before = plugin_b.before_order.clone();
+        let b_after = plugin_b.after_order.clone();
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(plugin_a))
+            .with_plugin(Box::new(plugin_b))
+            .build()
+            .unwrap();
+
+        let mut call = ToolCallRequest {
+            id: "tc1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"cmd": "ls"}),
+        };
+        runtime.run_before_tool_call(&mut call).await.unwrap();
+
+        assert_eq!(*a_before.lock().unwrap(), Some(0));
+        assert_eq!(*b_before.lock().unwrap(), Some(1));
+
+        let mut result = ToolCallResult {
+            tool_call_id: "tc1".into(),
+            content: "output".into(),
+            is_error: false,
+        };
+        runtime.run_after_tool_call(&call, &mut result).await.unwrap();
+
+        assert_eq!(*a_after.lock().unwrap(), Some(2));
+        assert_eq!(*b_after.lock().unwrap(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn before_tool_call_mutates_request() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let plugin = RecordingPlugin::new("mutator", counter);
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(plugin))
+            .build()
+            .unwrap();
+
+        let mut call = ToolCallRequest {
+            id: "tc1".into(),
+            name: "write_file".into(),
+            arguments: serde_json::json!({"path": "/tmp/foo"}),
+        };
+        runtime.run_before_tool_call(&mut call).await.unwrap();
+
+        assert_eq!(call.arguments["modified_by"], "mutator");
+        assert_eq!(call.arguments["original"]["path"], "/tmp/foo");
+    }
+
+    #[tokio::test]
+    async fn after_tool_call_mutates_result() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let plugin = RecordingPlugin::new("postproc", counter);
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(plugin))
+            .build()
+            .unwrap();
+
+        let call = ToolCallRequest {
+            id: "tc1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({}),
+        };
+        let mut result = ToolCallResult {
+            tool_call_id: "tc1".into(),
+            content: "file.txt".into(),
+            is_error: false,
+        };
+        runtime.run_after_tool_call(&call, &mut result).await.unwrap();
+
+        assert_eq!(result.content, "file.txt [after:postproc]");
+    }
+
+    #[tokio::test]
+    async fn output_chunk_hook_mutates_text() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let plugin_a = RecordingPlugin::new("A", counter.clone());
+        let plugin_b = RecordingPlugin::new("B", counter);
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(plugin_a))
+            .with_plugin(Box::new(plugin_b))
+            .build()
+            .unwrap();
+
+        let mut chunk = OutputChunk {
+            text: "hello".into(),
+            is_final: false,
+        };
+        runtime.run_output_chunk(&mut chunk).await.unwrap();
+
+        assert_eq!(chunk.text, "[B][A]hello");
+    }
+
+    #[tokio::test]
+    async fn context_compact_first_plugin_wins() {
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(SummarizerPlugin))
+            .build()
+            .unwrap();
+
+        let messages = vec![
+            Message { role: Role::User, content: MessageContent::Text("msg1".into()) },
+            Message { role: Role::User, content: MessageContent::Text("msg2".into()) },
+            Message { role: Role::User, content: MessageContent::Text("msg3".into()) },
+        ];
+
+        let result = runtime.run_context_compact(&messages, 100).await.unwrap();
+        assert!(result.is_some());
+        let replacement = result.unwrap();
+        assert_eq!(replacement.len(), 1);
+        match &replacement[0].content {
+            MessageContent::Text(t) => assert_eq!(t, "[summary of 3 messages]"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    #[tokio::test]
+    async fn context_compact_no_override_returns_none() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(RecordingPlugin::new("noop", counter)))
+            .build()
+            .unwrap();
+
+        let messages = vec![
+            Message { role: Role::User, content: MessageContent::Text("m1".into()) },
+        ];
+        let result = runtime.run_context_compact(&messages, 100).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_start_hook_called() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let plugin = RecordingPlugin::new("starter", counter.clone());
+        let order = plugin.session_start_order.clone();
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(plugin))
+            .build()
+            .unwrap();
+
+        let mut session = crate::session::Session::new(4096, "claude", "sonnet");
+        runtime.run_session_start(&mut session).await.unwrap();
+
+        assert_eq!(*order.lock().unwrap(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn default_noop_hooks_pass_through() {
+        struct NoopPlugin;
+        #[async_trait::async_trait]
+        impl Plugin for NoopPlugin {
+            fn name(&self) -> &str { "noop" }
+        }
+
+        let runtime = AgentBuilder::new(AgentConfig::default())
+            .with_llm(Arc::new(DummyProvider { name: "d".into() }))
+            .with_workspace_store(Arc::new(MockWS))
+            .with_session_store(Arc::new(MockSS))
+            .with_binding_store(Arc::new(MockBS))
+            .with_plugin(Box::new(NoopPlugin))
+            .build()
+            .unwrap();
+
+        let mut call = ToolCallRequest {
+            id: "tc1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"cmd": "echo hi"}),
+        };
+        let original_args = call.arguments.clone();
+        runtime.run_before_tool_call(&mut call).await.unwrap();
+        assert_eq!(call.arguments, original_args);
+
+        let mut result = ToolCallResult {
+            tool_call_id: "tc1".into(),
+            content: "output".into(),
+            is_error: false,
+        };
+        runtime.run_after_tool_call(&call, &mut result).await.unwrap();
+        assert_eq!(result.content, "output");
+
+        let mut chunk = OutputChunk {
+            text: "hello world".into(),
+            is_final: true,
+        };
+        runtime.run_output_chunk(&mut chunk).await.unwrap();
+        assert_eq!(chunk.text, "hello world");
+
+        let msgs = vec![Message { role: Role::User, content: MessageContent::Text("x".into()) }];
+        let compact_result = runtime.run_context_compact(&msgs, 100).await.unwrap();
+        assert!(compact_result.is_none());
+
+        let mut session = crate::session::Session::new(4096, "test", "model");
+        runtime.run_session_start(&mut session).await.unwrap();
     }
 }

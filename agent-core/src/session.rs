@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::context::ContextWindow;
-use crate::plugin::{Message, Role, MessageContent, PluginHost};
+use crate::types::{Message, Role, MessageContent};
 
 // ---------------------------------------------------------------------------
 // Session
@@ -186,14 +186,14 @@ impl SessionManager {
         max_tokens: usize,
         provider: &str,
         model: &str,
-        plugin_host: &PluginHost,
+        runtime: &crate::builder::AgentRuntime,
     ) -> anyhow::Result<SessionId> {
         let mut session = Session::new(max_tokens, provider, model);
         let id = session.id.clone();
         tracing::info!(session_id = %id, "created session (with plugin hooks)");
 
         // Run on_session_start hooks
-        plugin_host.run_session_start(&mut session).await?;
+        runtime.run_session_start(&mut session).await?;
 
         let mut sessions = self.sessions.write().await;
         sessions.insert(id.clone(), Arc::new(Mutex::new(session)));

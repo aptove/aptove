@@ -214,7 +214,7 @@ mod tests {
     use super::*;
     use crate::bindings::BindingStore;
     use crate::persistence::{SessionData, SessionStore};
-    use crate::plugin::Message;
+    use crate::types::Message;
     use std::collections::HashMap;
     use tokio::sync::RwLock;
 

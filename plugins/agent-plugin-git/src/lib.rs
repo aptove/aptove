@@ -26,7 +26,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use agent_core::plugin::{OutputChunk, Plugin, ToolCallRequest, ToolCallResult};
+use agent_core::plugin::{OutputChunk, Plugin};
+use agent_core::types::{ToolCallRequest, ToolCallResult};
 use agent_core::session::Session;
 
 // ---------------------------------------------------------------------------
