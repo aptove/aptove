@@ -19,10 +19,13 @@ use uuid::Uuid;
 use agent_core::agent_loop::{AgentLoopConfig, ToolExecutor};
 use agent_core::config::{self, AgentConfig};
 use agent_core::plugin::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult};
+use agent_core::scheduler::{JobDefinition, JobRun, JobStatus, JobSummary, SchedulerStore};
 use agent_core::session::SessionManager;
 use agent_core::system_prompt::{SystemPromptManager, DEFAULT_SYSTEM_PROMPT};
-use agent_core::transport::{IncomingMessage, InProcessTransport, JsonRpcId, StdioTransport, TransportSender};
+use agent_core::transport::{IncomingMessage, JsonRpcId, StdioTransport, TransportSender};
 use agent_core::{AgentBuilder, AgentRuntime};
+
+use agent_scheduler::{validate_cron, Scheduler};
 
 use agent_client_protocol_schema::{
     AgentCapabilities, ContentBlock, Implementation, InitializeResponse, NewSessionResponse,
@@ -34,7 +37,7 @@ use agent_bridge::{BridgeServer, BridgeServeConfig};
 use agent_provider_claude::ClaudeProvider;
 use agent_provider_gemini::GeminiProvider;
 use agent_provider_openai::OpenAiProvider;
-use agent_storage_fs::{FsBindingStore, FsSessionStore, FsWorkspaceStore};
+use agent_storage_fs::{FsBindingStore, FsSchedulerStore, FsSessionStore, FsWorkspaceStore};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -82,6 +85,82 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+    /// Scheduled job management
+    Jobs {
+        #[command(subcommand)]
+        action: JobsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum JobsAction {
+    /// List all scheduled jobs in a workspace
+    List {
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Create a new scheduled job
+    Create {
+        /// Job display name
+        #[arg(long)]
+        name: String,
+        /// Prompt to send to the LLM on each run
+        #[arg(long)]
+        prompt: String,
+        /// Cron expression (5-field, e.g. "0 9 * * *" for 9 AM daily)
+        #[arg(long)]
+        schedule: String,
+        /// IANA timezone (e.g. "America/New_York"). Defaults to UTC.
+        #[arg(long)]
+        timezone: Option<String>,
+        /// Run only once then disable
+        #[arg(long)]
+        one_shot: bool,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Show a job's details and latest output
+    Show {
+        /// Job UUID
+        job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Manually trigger a job immediately
+    Run {
+        /// Job UUID
+        job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Enable a job
+    Enable {
+        /// Job UUID
+        job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Disable a job
+    Disable {
+        /// Job UUID
+        job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Delete a job and its run history
+    Delete {
+        /// Job UUID
+        job_id: String,
+        /// Workspace UUID (default: uses default workspace)
+        #[arg(long)]
+        workspace: Option<String>,
     },
 }
 
@@ -176,6 +255,7 @@ async fn run() -> Result<()> {
         Commands::Chat => run_chat_mode(agent_config).await,
         Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
         Commands::Config { action } => run_config_command(action, agent_config),
+        Commands::Jobs { action } => run_jobs_command(action, agent_config).await,
     }
 }
 
@@ -259,11 +339,14 @@ async fn build_runtime(config: AgentConfig) -> Result<AgentRuntime> {
         .context("failed to initialize session store")?);
     let binding_store = Arc::new(FsBindingStore::new_sync(&data_dir)
         .context("failed to initialize binding store")?);
+    let scheduler_store = Arc::new(FsSchedulerStore::new(&data_dir)
+        .context("failed to initialize scheduler store")?);
 
     builder = builder
         .with_workspace_store(ws_store)
         .with_session_store(session_store)
-        .with_binding_store(binding_store);
+        .with_binding_store(binding_store)
+        .with_scheduler_store(scheduler_store);
 
     builder.build()
         .context("failed to build agent runtime")
@@ -344,6 +427,28 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
         }
     };
 
+    // Start the background scheduler (if scheduler store is configured)
+    let _scheduler_handle = {
+        let runtime_read = runtime.workspace_manager().workspace_store().clone();
+        if let Some(store) = runtime.scheduler_store().cloned() {
+            match runtime.active_provider() {
+                Ok(provider) => {
+                    let scheduler = Scheduler::new(store, runtime_read, provider);
+                    let handle = scheduler.start();
+                    info!("background scheduler started");
+                    Some(handle)
+                }
+                Err(e) => {
+                    warn!(err = %e, "could not start scheduler: no active provider");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    let scheduler_store = runtime.scheduler_store().cloned();
     let session_manager = SessionManager::new();
     let mut transport = StdioTransport::new();
     let sender = transport.sender();
@@ -355,6 +460,7 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
         session_workspaces: RwLock::new(HashMap::new()),
         mcp_bridge,
         sender,
+        scheduler_store,
     });
 
     info!("ready to accept ACP requests");
@@ -414,6 +520,28 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
         }
     };
 
+    // Start the background scheduler (if scheduler store is configured)
+    let _scheduler_handle = {
+        let ws_store = runtime.workspace_manager().workspace_store().clone();
+        if let Some(store) = runtime.scheduler_store().cloned() {
+            match runtime.active_provider() {
+                Ok(provider) => {
+                    let scheduler = Scheduler::new(store, ws_store, provider);
+                    let handle = scheduler.start();
+                    info!("background scheduler started");
+                    Some(handle)
+                }
+                Err(e) => {
+                    warn!(err = %e, "could not start scheduler: no active provider");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    let scheduler_store = runtime.scheduler_store().cloned();
     let server = BridgeServer::build(&bridge_config)?;
     let mut transport = server.transport;
     let sender = transport.sender();
@@ -425,6 +553,7 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
         session_workspaces: RwLock::new(HashMap::new()),
         mcp_bridge,
         sender,
+        scheduler_store,
     });
 
     info!("ready — bridge server starting");
@@ -466,6 +595,8 @@ struct AgentState {
     session_workspaces: RwLock<HashMap<String, String>>,
     mcp_bridge: Option<Arc<tokio::sync::Mutex<McpBridge>>>,
     sender: TransportSender,
+    /// Scheduler store for jobs/* ACP methods (None if not configured).
+    scheduler_store: Option<Arc<dyn SchedulerStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +611,13 @@ async fn handle_message(msg: IncomingMessage, state: &AgentState) -> Result<()> 
                 "session/new" => handle_session_new(id.clone(), &params, state).await,
                 "session/load" => handle_session_load(id.clone(), &params, state).await,
                 "session/prompt" => handle_session_prompt(id.clone(), &params, state).await,
+                "jobs/create" => handle_jobs_create(id.clone(), &params, state).await,
+                "jobs/list" => handle_jobs_list(id.clone(), &params, state).await,
+                "jobs/get" => handle_jobs_get(id.clone(), &params, state).await,
+                "jobs/update" => handle_jobs_update(id.clone(), &params, state).await,
+                "jobs/delete" => handle_jobs_delete(id.clone(), &params, state).await,
+                "jobs/history" => handle_jobs_history(id.clone(), &params, state).await,
+                "jobs/trigger" => handle_jobs_trigger(id.clone(), &params, state).await,
                 _ => {
                     return state
                         .sender
@@ -1005,6 +1143,343 @@ async fn handle_session_load(
 
     let result = serde_json::to_value(&NewSessionResponse::new(session_id))
         .context("failed to serialize session/load response")?;
+    state.sender.send_response(id, result).await
+}
+
+// ---------------------------------------------------------------------------
+// Jobs ACP handlers
+// ---------------------------------------------------------------------------
+
+/// Helper: get the scheduler store or return a JSON-RPC error.
+macro_rules! require_scheduler_store {
+    ($state:expr, $id:expr) => {
+        match $state.scheduler_store.as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                return $state
+                    .sender
+                    .send_error(
+                        $id,
+                        agent_core::transport::error_codes::INTERNAL_ERROR,
+                        "scheduler store not configured".to_string(),
+                    )
+                    .await;
+            }
+        }
+    };
+}
+
+/// Helper: extract `workspace_id` from params or return a JSON-RPC error.
+macro_rules! require_param_str {
+    ($params:expr, $field:expr, $id:expr, $state:expr) => {
+        match $params
+            .as_ref()
+            .and_then(|p| p.get($field))
+            .and_then(|v| v.as_str())
+        {
+            Some(v) => v.to_string(),
+            None => {
+                return $state
+                    .sender
+                    .send_error(
+                        $id,
+                        agent_core::transport::error_codes::INVALID_PARAMS,
+                        format!("missing required field: {}", $field),
+                    )
+                    .await;
+            }
+        }
+    };
+}
+
+async fn handle_jobs_create(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let name = require_param_str!(params, "name", id, state);
+    let prompt = require_param_str!(params, "prompt", id, state);
+    let schedule = require_param_str!(params, "schedule", id, state);
+
+    // Validate cron expression
+    if let Err(e) = validate_cron(&schedule) {
+        return state
+            .sender
+            .send_error(
+                id,
+                agent_core::transport::error_codes::INVALID_PARAMS,
+                format!("invalid cron expression: {}", e),
+            )
+            .await;
+    }
+
+    let p = params.as_ref();
+    let timezone = p
+        .and_then(|p| p.get("timezone"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let one_shot = p
+        .and_then(|p| p.get("one_shot"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let notify = p
+        .and_then(|p| p.get("notify"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let max_history = p
+        .and_then(|p| p.get("max_history"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(7) as u32;
+
+    let now = chrono::Utc::now();
+    let job = JobDefinition {
+        id: Uuid::new_v4().to_string(),
+        name,
+        prompt,
+        schedule,
+        timezone,
+        enabled: true,
+        one_shot,
+        notify,
+        max_history,
+        created_at: now,
+        updated_at: now,
+        last_run_at: None,
+    };
+
+    let created = store.create_job(&workspace_id, &job).await
+        .context("failed to create job")?;
+
+    let result = serde_json::to_value(&created)
+        .context("failed to serialize job")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_jobs_list(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+
+    let jobs = store.list_jobs(&workspace_id).await
+        .context("failed to list jobs")?;
+
+    let summaries: Vec<JobSummary> = jobs.iter().map(JobSummary::from).collect();
+    let result = serde_json::to_value(&summaries)
+        .context("failed to serialize job list")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_jobs_get(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let job_id = require_param_str!(params, "job_id", id, state);
+
+    let job = store.get_job(&workspace_id, &job_id).await
+        .context("job not found")?;
+
+    let result = serde_json::to_value(&job)
+        .context("failed to serialize job")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_jobs_update(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let job_id = require_param_str!(params, "job_id", id, state);
+
+    // Load existing job and apply partial updates
+    let mut job = store.get_job(&workspace_id, &job_id).await
+        .context("job not found")?;
+
+    let p = params.as_ref();
+    if let Some(name) = p.and_then(|p| p.get("name")).and_then(|v| v.as_str()) {
+        job.name = name.to_string();
+    }
+    if let Some(prompt) = p.and_then(|p| p.get("prompt")).and_then(|v| v.as_str()) {
+        job.prompt = prompt.to_string();
+    }
+    if let Some(schedule) = p.and_then(|p| p.get("schedule")).and_then(|v| v.as_str()) {
+        if let Err(e) = validate_cron(schedule) {
+            return state
+                .sender
+                .send_error(
+                    id,
+                    agent_core::transport::error_codes::INVALID_PARAMS,
+                    format!("invalid cron expression: {}", e),
+                )
+                .await;
+        }
+        job.schedule = schedule.to_string();
+    }
+    if let Some(tz) = p.and_then(|p| p.get("timezone")) {
+        job.timezone = if tz.is_null() {
+            None
+        } else {
+            tz.as_str().map(|s| s.to_string())
+        };
+    }
+    if let Some(enabled) = p.and_then(|p| p.get("enabled")).and_then(|v| v.as_bool()) {
+        job.enabled = enabled;
+    }
+    if let Some(one_shot) = p.and_then(|p| p.get("one_shot")).and_then(|v| v.as_bool()) {
+        job.one_shot = one_shot;
+    }
+    if let Some(notify) = p.and_then(|p| p.get("notify")).and_then(|v| v.as_bool()) {
+        job.notify = notify;
+    }
+    if let Some(max_history) = p.and_then(|p| p.get("max_history")).and_then(|v| v.as_u64()) {
+        job.max_history = max_history as u32;
+    }
+    job.updated_at = chrono::Utc::now();
+
+    let updated = store.update_job(&workspace_id, &job).await
+        .context("failed to update job")?;
+
+    let result = serde_json::to_value(&updated)
+        .context("failed to serialize job")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_jobs_delete(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let job_id = require_param_str!(params, "job_id", id, state);
+
+    store.delete_job(&workspace_id, &job_id).await
+        .context("failed to delete job")?;
+
+    state.sender.send_response(id, serde_json::json!({})).await
+}
+
+async fn handle_jobs_history(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let job_id = require_param_str!(params, "job_id", id, state);
+
+    let limit = params
+        .as_ref()
+        .and_then(|p| p.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+
+    let runs = store.list_runs(&workspace_id, &job_id, limit).await
+        .context("failed to list job runs")?;
+
+    let result = serde_json::to_value(&runs)
+        .context("failed to serialize runs")?;
+    state.sender.send_response(id, result).await
+}
+
+async fn handle_jobs_trigger(
+    id: JsonRpcId,
+    params: &Option<serde_json::Value>,
+    state: &AgentState,
+) -> Result<()> {
+    let store = require_scheduler_store!(state, id);
+    let workspace_id = require_param_str!(params, "workspace_id", id, state);
+    let job_id = require_param_str!(params, "job_id", id, state);
+
+    let job = store.get_job(&workspace_id, &job_id).await
+        .context("job not found")?;
+
+    let provider = state.runtime.read().await.active_provider()
+        .context("no active LLM provider")?;
+
+    // Execute the job inline (manual trigger — same as scheduled execution)
+    use std::time::Instant;
+    let start = Instant::now();
+    let timestamp = chrono::Utc::now();
+    let run_id = Uuid::new_v4().to_string();
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: MessageContent::Text(job.prompt.clone()),
+    }];
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let loop_cfg = AgentLoopConfig { max_iterations: 25 };
+
+    let run = match agent_core::agent_loop::run_agent_loop(
+        provider,
+        &messages,
+        &[],
+        None,
+        &loop_cfg,
+        cancel,
+        None,
+        &run_id,
+        None,
+    )
+    .await
+    {
+        Ok(result) => {
+            let output = result
+                .new_messages
+                .iter()
+                .filter_map(|m| match &m.content {
+                    MessageContent::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            JobRun {
+                job_id: job.id.clone(),
+                timestamp,
+                status: JobStatus::Success,
+                output,
+                duration_ms: start.elapsed().as_millis() as u64,
+                error_message: None,
+            }
+        }
+        Err(e) => JobRun {
+            job_id: job.id.clone(),
+            timestamp,
+            status: JobStatus::Error,
+            output: String::new(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            error_message: Some(e.to_string()),
+        },
+    };
+
+    // Persist the run
+    store.write_run(&workspace_id, &job.id, &run).await.ok();
+
+    // Update last_run_at
+    let mut updated_job = job.clone();
+    updated_job.last_run_at = Some(run.timestamp);
+    updated_job.updated_at = chrono::Utc::now();
+    if job.one_shot && run.status == JobStatus::Success {
+        updated_job.enabled = false;
+    }
+    store.update_job(&workspace_id, &updated_job).await.ok();
+
+    // Prune old runs
+    if job.max_history > 0 {
+        store.prune_runs(&workspace_id, &job.id, job.max_history as usize).await.ok();
+    }
+
+    let result = serde_json::to_value(&run)
+        .context("failed to serialize run result")?;
     state.sender.send_response(id, result).await
 }
 
@@ -1552,5 +2027,255 @@ fn run_config_command(action: ConfigAction, config: AgentConfig) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Jobs CLI commands
+// ---------------------------------------------------------------------------
+
+async fn run_jobs_command(action: JobsAction, config: AgentConfig) -> Result<()> {
+    let data_dir = AgentConfig::data_dir()
+        .context("failed to determine data directory")?;
+    let store = Arc::new(
+        FsSchedulerStore::new(&data_dir).context("failed to initialize scheduler store")?,
+    );
+
+    let runtime = build_runtime(config).await?;
+
+    // Inline helper: resolve workspace UUID or fall back to default
+    macro_rules! resolve_ws {
+        ($opt:expr) => {
+            if let Some(id) = $opt {
+                id
+            } else {
+                runtime.workspace_manager().default().await?.uuid
+            }
+        };
+    }
+
+    match action {
+        JobsAction::List { workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let jobs = store.list_jobs(&ws_id).await?;
+
+            if jobs.is_empty() {
+                println!("No scheduled jobs in workspace {}.", ws_id);
+            } else {
+                println!(
+                    "{:<38} {:<24} {:<16} {:<10} {}",
+                    "ID", "NAME", "SCHEDULE", "STATUS", "LAST RUN"
+                );
+                println!("{}", "-".repeat(110));
+                for job in &jobs {
+                    let status = if !job.enabled {
+                        "disabled".to_string()
+                    } else if job.last_run_at.is_none() {
+                        "pending".to_string()
+                    } else {
+                        "enabled".to_string()
+                    };
+                    let last_run = job
+                        .last_run_at
+                        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "never".to_string());
+                    println!(
+                        "{:<38} {:<24} {:<16} {:<10} {}",
+                        job.id,
+                        &job.name[..job.name.len().min(23)],
+                        job.schedule,
+                        status,
+                        last_run,
+                    );
+                }
+            }
+        }
+
+        JobsAction::Create {
+            name,
+            prompt,
+            schedule,
+            timezone,
+            one_shot,
+            workspace,
+        } => {
+            validate_cron(&schedule)
+                .with_context(|| format!("invalid cron expression: {:?}", schedule))?;
+
+            let ws_id = resolve_ws!(workspace);
+            let now = chrono::Utc::now();
+            let job = JobDefinition {
+                id: Uuid::new_v4().to_string(),
+                name: name.clone(),
+                prompt,
+                schedule: schedule.clone(),
+                timezone,
+                enabled: true,
+                one_shot,
+                notify: true,
+                max_history: 7,
+                created_at: now,
+                updated_at: now,
+                last_run_at: None,
+            };
+
+            let created = store.create_job(&ws_id, &job).await?;
+            println!("✅ Created job: {}", created.id);
+            println!("   Name:     {}", created.name);
+            println!("   Schedule: {}", created.schedule);
+            println!("   Workspace: {}", ws_id);
+        }
+
+        JobsAction::Show { job_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let job = store.get_job(&ws_id, &job_id).await
+                .with_context(|| format!("job '{}' not found", job_id))?;
+
+            println!("Job: {}", job.id);
+            println!("  Name:      {}", job.name);
+            println!("  Schedule:  {}", job.schedule);
+            if let Some(tz) = &job.timezone {
+                println!("  Timezone:  {}", tz);
+            }
+            println!("  Enabled:   {}", job.enabled);
+            println!("  One-shot:  {}", job.one_shot);
+            println!("  Notify:    {}", job.notify);
+            println!("  Max runs:  {}", job.max_history);
+            println!("  Created:   {}", job.created_at.format("%Y-%m-%d %H:%M:%S"));
+            if let Some(t) = job.last_run_at {
+                println!("  Last run:  {}", t.format("%Y-%m-%d %H:%M:%S"));
+            }
+            println!("\nPrompt:\n{}", job.prompt);
+
+            // Show latest output if available
+            let runs = store.list_runs(&ws_id, &job_id, 1).await.unwrap_or_default();
+            if let Some(run) = runs.first() {
+                println!("\nLatest run ({}):", run.timestamp.format("%Y-%m-%d %H:%M:%S"));
+                println!("  Status: {}", run.status);
+                if !run.output.is_empty() {
+                    println!("\n{}", run.output);
+                }
+                if let Some(ref err) = run.error_message {
+                    println!("  Error: {}", err);
+                }
+            }
+        }
+
+        JobsAction::Run { job_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let job = store.get_job(&ws_id, &job_id).await
+                .with_context(|| format!("job '{}' not found", job_id))?;
+
+            println!("Running job '{}' ({})...", job.name, job.id);
+
+            let provider = runtime.active_provider()
+                .context("no active LLM provider")?;
+
+            let messages = vec![Message {
+                role: Role::User,
+                content: MessageContent::Text(job.prompt.clone()),
+            }];
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let loop_cfg = AgentLoopConfig { max_iterations: 25 };
+            let start = std::time::Instant::now();
+            let timestamp = chrono::Utc::now();
+            let run_id = Uuid::new_v4().to_string();
+
+            let run = match agent_core::agent_loop::run_agent_loop(
+                provider,
+                &messages,
+                &[],
+                None,
+                &loop_cfg,
+                cancel,
+                None,
+                &run_id,
+                None,
+            )
+            .await
+            {
+                Ok(result) => {
+                    let output = result
+                        .new_messages
+                        .iter()
+                        .filter_map(|m| match &m.content {
+                            MessageContent::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    JobRun {
+                        job_id: job.id.clone(),
+                        timestamp,
+                        status: JobStatus::Success,
+                        output,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        error_message: None,
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Job execution failed: {}", e);
+                    JobRun {
+                        job_id: job.id.clone(),
+                        timestamp,
+                        status: JobStatus::Error,
+                        output: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        error_message: Some(e.to_string()),
+                    }
+                }
+            };
+
+            store.write_run(&ws_id, &job.id, &run).await.ok();
+
+            let mut updated_job = job.clone();
+            updated_job.last_run_at = Some(run.timestamp);
+            updated_job.updated_at = chrono::Utc::now();
+            if job.one_shot && run.status == JobStatus::Success {
+                updated_job.enabled = false;
+            }
+            store.update_job(&ws_id, &updated_job).await.ok();
+            if job.max_history > 0 {
+                store.prune_runs(&ws_id, &job.id, job.max_history as usize).await.ok();
+            }
+
+            println!("\nStatus: {} ({} ms)", run.status, run.duration_ms);
+            if !run.output.is_empty() {
+                println!("\n{}", run.output);
+            }
+            if let Some(ref err) = run.error_message {
+                eprintln!("Error: {}", err);
+            }
+        }
+
+        JobsAction::Enable { job_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let mut job = store.get_job(&ws_id, &job_id).await
+                .with_context(|| format!("job '{}' not found", job_id))?;
+            job.enabled = true;
+            job.updated_at = chrono::Utc::now();
+            store.update_job(&ws_id, &job).await?;
+            println!("✅ Job '{}' enabled.", job.name);
+        }
+
+        JobsAction::Disable { job_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let mut job = store.get_job(&ws_id, &job_id).await
+                .with_context(|| format!("job '{}' not found", job_id))?;
+            job.enabled = false;
+            job.updated_at = chrono::Utc::now();
+            store.update_job(&ws_id, &job).await?;
+            println!("Job '{}' disabled.", job.name);
+        }
+
+        JobsAction::Delete { job_id, workspace } => {
+            let ws_id = resolve_ws!(workspace);
+            let job = store.get_job(&ws_id, &job_id).await
+                .with_context(|| format!("job '{}' not found", job_id))?;
+            store.delete_job(&ws_id, &job_id).await?;
+            println!("🗑  Deleted job '{}' ({}).", job.name, job_id);
+        }
+    }
+
     Ok(())
 }

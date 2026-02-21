@@ -13,6 +13,7 @@ use crate::bindings::BindingStore;
 use crate::config::AgentConfig;
 use crate::persistence::SessionStore;
 use crate::plugin::{LlmProvider, Plugin, ToolDefinition};
+use crate::scheduler::SchedulerStore;
 use crate::workspace::{WorkspaceManager, WorkspaceStore};
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ pub struct AgentBuilder {
     workspace_store: Option<Arc<dyn WorkspaceStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
     binding_store: Option<Arc<dyn BindingStore>>,
+    scheduler_store: Option<Arc<dyn SchedulerStore>>,
     plugins: Vec<Box<dyn Plugin>>,
     config: AgentConfig,
 }
@@ -42,6 +44,7 @@ impl AgentBuilder {
             workspace_store: None,
             session_store: None,
             binding_store: None,
+            scheduler_store: None,
             plugins: Vec::new(),
             config,
         }
@@ -72,6 +75,13 @@ impl AgentBuilder {
     /// Set the device-binding storage backend.
     pub fn with_binding_store(mut self, store: Arc<dyn BindingStore>) -> Self {
         self.binding_store = Some(store);
+        self
+    }
+
+    /// Set the scheduler storage backend.
+    /// If not provided, the scheduler is disabled.
+    pub fn with_scheduler_store(mut self, store: Arc<dyn SchedulerStore>) -> Self {
+        self.scheduler_store = Some(store);
         self
     }
 
@@ -118,6 +128,7 @@ impl AgentBuilder {
             providers: self.providers,
             active_provider: active,
             workspace_manager,
+            scheduler_store: self.scheduler_store,
             plugins: self.plugins,
             config: self.config,
             tools: Vec::new(),
@@ -136,6 +147,7 @@ pub struct AgentRuntime {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
     active_provider: String,
     workspace_manager: WorkspaceManager,
+    scheduler_store: Option<Arc<dyn SchedulerStore>>,
     plugins: Vec<Box<dyn Plugin>>,
     config: AgentConfig,
     tools: Vec<ToolDefinition>,
@@ -177,6 +189,16 @@ impl AgentRuntime {
     /// Access the workspace manager.
     pub fn workspace_manager(&self) -> &WorkspaceManager {
         &self.workspace_manager
+    }
+
+    /// Access the scheduler store (if configured).
+    pub fn scheduler_store(&self) -> Option<&Arc<dyn SchedulerStore>> {
+        self.scheduler_store.as_ref()
+    }
+
+    /// Access all registered LLM providers.
+    pub fn providers(&self) -> &HashMap<String, Arc<dyn LlmProvider>> {
+        &self.providers
     }
 
     /// Access the agent configuration.

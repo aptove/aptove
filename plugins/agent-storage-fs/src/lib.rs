@@ -20,9 +20,11 @@
 //! ```
 
 mod binding_store;
+mod scheduler_store;
 mod session_store;
 mod workspace_store;
 
 pub use binding_store::FsBindingStore;
+pub use scheduler_store::FsSchedulerStore;
 pub use session_store::FsSessionStore;
 pub use workspace_store::FsWorkspaceStore;
