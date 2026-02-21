@@ -1,0 +1,23 @@
+[package]
+name = "agent-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Embedded bridge server for aptove — runs agent + WebSocket server in one process"
+
+[dependencies]
+agent-core.workspace = true
+bridge = { path = "../../../bridge" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-tungstenite = "0.21"
+tempfile.workspace = true

@@ -25,5 +25,5 @@ pub use context::ContextWindow;
 pub use persistence::{SessionData, SessionStore};
 pub use plugin::{LlmProvider, LlmResponse, ModelInfo, OutputChunk, Plugin, PluginHost, StopReason, TokenUsage};
 pub use session::{Session, SessionManager};
-pub use transport::StdioTransport;
+pub use transport::{StdioTransport, InProcessTransport};
 pub use workspace::{WorkspaceManager, WorkspaceMetadata, WorkspaceStore, WorkspaceSummary};

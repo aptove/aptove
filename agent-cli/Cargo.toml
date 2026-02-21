@@ -33,3 +33,4 @@ async-trait.workspace = true
 futures.workspace = true
 which.workspace = true
 uuid.workspace = true
+agent-bridge.workspace = true

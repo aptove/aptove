@@ -21,7 +21,7 @@ use agent_core::config::{self, AgentConfig};
 use agent_core::plugin::{Message, MessageContent, Role, ToolCallRequest, ToolCallResult};
 use agent_core::session::SessionManager;
 use agent_core::system_prompt::{SystemPromptManager, DEFAULT_SYSTEM_PROMPT};
-use agent_core::transport::{IncomingMessage, JsonRpcId, StdioTransport, TransportSender};
+use agent_core::transport::{IncomingMessage, InProcessTransport, JsonRpcId, StdioTransport, TransportSender};
 use agent_core::{AgentBuilder, AgentRuntime};
 
 use agent_client_protocol_schema::{
@@ -30,6 +30,7 @@ use agent_client_protocol_schema::{
 };
 
 use agent_mcp_bridge::McpBridge;
+use agent_bridge::{BridgeServer, BridgeServeConfig};
 use agent_provider_claude::ClaudeProvider;
 use agent_provider_gemini::GeminiProvider;
 use agent_provider_openai::OpenAiProvider;
@@ -58,6 +59,18 @@ struct Cli {
 enum Commands {
     /// Start in ACP stdio mode (default)
     Run,
+    /// Run the ACP agent and WebSocket bridge in a single process
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value = "8765")]
+        port: u16,
+        /// Enable TLS
+        #[arg(long, default_value = "true")]
+        tls: bool,
+        /// Bind address (default: 0.0.0.0)
+        #[arg(long)]
+        bind: Option<String>,
+    },
     /// Interactive REPL chat mode
     Chat,
     /// Workspace management
@@ -150,6 +163,16 @@ async fn run() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_acp_mode(agent_config).await,
+        Commands::Serve { port, tls, bind } => {
+            let mut bridge_config = BridgeServeConfig::load()
+                .unwrap_or_default();
+            bridge_config.port = port;
+            bridge_config.tls = tls;
+            if let Some(addr) = bind {
+                bridge_config.bind_addr = addr;
+            }
+            run_serve_mode(agent_config, bridge_config).await
+        }
         Commands::Chat => run_chat_mode(agent_config).await,
         Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
         Commands::Config { action } => run_config_command(action, agent_config),
@@ -351,6 +374,85 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
     }
 
     info!("ACP transport closed, shutting down");
+    state.runtime.read().await.shutdown_plugins().await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Serve mode — embedded bridge + agent in a single process
+// ---------------------------------------------------------------------------
+
+async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -> Result<()> {
+    info!(port = bridge_config.port, tls = bridge_config.tls, "starting Aptove in serve mode");
+
+    match config.validate() {
+        Ok(warnings) => {
+            for w in &warnings {
+                tracing::warn!("⚠️  {}", w);
+            }
+        }
+        Err(e) => {
+            error!("configuration validation failed: {:#}", e);
+            anyhow::bail!("{}", e);
+        }
+    }
+
+    let mut runtime = build_runtime(config.clone()).await
+        .context("failed to initialize agent runtime")?;
+
+    let mcp_bridge = match setup_mcp_bridge(&config).await {
+        Ok(Some(bridge)) => {
+            let b = bridge.lock().await;
+            runtime.register_tools(b.all_tools());
+            drop(b);
+            Some(bridge)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            error!(err = %e, "failed to set up MCP bridge (continuing without tools)");
+            None
+        }
+    };
+
+    let server = BridgeServer::build(&bridge_config)?;
+    let mut transport = server.transport;
+    let sender = transport.sender();
+
+    let state = Arc::new(AgentState {
+        config: config.clone(),
+        runtime: RwLock::new(runtime),
+        session_manager: SessionManager::new(),
+        session_workspaces: RwLock::new(HashMap::new()),
+        mcp_bridge,
+        sender,
+    });
+
+    info!("ready — bridge server starting");
+
+    let state_for_loop = state.clone();
+    let agent_loop = async move {
+        while let Some(msg) = transport.recv().await {
+            let s = state_for_loop.clone();
+            tokio::spawn(async move {
+                if let Err(e) = handle_message(msg, &s).await {
+                    error!(err = %e, "error handling message");
+                    for cause in e.chain().skip(1) {
+                        error!("  caused by: {}", cause);
+                    }
+                }
+            });
+        }
+        info!("agent transport closed");
+        Ok::<_, anyhow::Error>(())
+    };
+
+    let bridge_serve = server.bridge.start();
+
+    tokio::select! {
+        res = agent_loop => { res?; }
+        res = bridge_serve => { res.map_err(|e| anyhow::anyhow!("bridge error: {}", e))?; }
+    }
+
     state.runtime.read().await.shutdown_plugins().await?;
     Ok(())
 }

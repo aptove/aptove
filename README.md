@@ -45,6 +45,9 @@ cargo run --bin aptove -- config init
 # Start in ACP stdio mode (for use with bridge/clients)
 cargo run --bin aptove -- run
 
+# Start embedded bridge + agent in a single process
+cargo run --bin aptove -- serve --port 8765
+
 # Start interactive chat mode
 cargo run --bin aptove -- chat
 ```

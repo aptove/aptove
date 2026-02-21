@@ -265,7 +265,96 @@ impl StdioTransport {
     }
 }
 
-/// Standard JSON-RPC error codes.
+/// ACP In-Process Transport.
+///
+/// Identical protocol to [`StdioTransport`] but backed by `tokio::sync::mpsc`
+/// channels instead of stdin/stdout. Used when the agent runs in the same
+/// process as the bridge server (`aptove serve`).
+///
+/// The bridge writes newline-delimited JSON-RPC into `input_tx`;
+/// the agent reads from `input_rx`. Agent responses are written to
+/// `output_tx`; the bridge reads them from `output_rx`.
+pub struct InProcessTransport {
+    incoming_rx: mpsc::Receiver<IncomingMessage>,
+    sender: TransportSender,
+}
+
+impl InProcessTransport {
+    /// Create a new in-process transport connected to the supplied channel pair.
+    ///
+    /// - `input_rx`: receives raw JSON-RPC bytes from the bridge (replaces stdin)
+    /// - `output_tx`: sends raw JSON-RPC bytes back to the bridge (replaces stdout)
+    pub fn new(
+        input_rx: mpsc::Receiver<Vec<u8>>,
+        output_tx: mpsc::Sender<Vec<u8>>,
+    ) -> Self {
+        let (out_tx, out_rx) = mpsc::channel::<OutgoingMessage>(256);
+        tokio::spawn(Self::channel_writer_task(out_rx, output_tx));
+
+        let (in_tx, in_rx) = mpsc::channel::<IncomingMessage>(256);
+        tokio::spawn(Self::channel_reader_task(input_rx, in_tx));
+
+        Self {
+            incoming_rx: in_rx,
+            sender: TransportSender { tx: out_tx },
+        }
+    }
+
+    /// Get a cloneable sender handle.
+    pub fn sender(&self) -> TransportSender {
+        self.sender.clone()
+    }
+
+    /// Receive the next incoming message. Returns `None` when the input channel closes.
+    pub async fn recv(&mut self) -> Option<IncomingMessage> {
+        self.incoming_rx.recv().await
+    }
+
+    async fn channel_reader_task(
+        mut rx: mpsc::Receiver<Vec<u8>>,
+        tx: mpsc::Sender<IncomingMessage>,
+    ) {
+        while let Some(bytes) = rx.recv().await {
+            let line = match std::str::from_utf8(&bytes) {
+                Ok(s) => s.trim().to_string(),
+                Err(e) => { warn!(err = %e, "invalid UTF-8 from bridge, skipping"); continue; }
+            };
+            if line.is_empty() { continue; }
+            debug!(raw = %line, "← in-process recv");
+
+            let raw: RawJsonRpcMessage = match serde_json::from_str(&line) {
+                Ok(m) => m,
+                Err(e) => { warn!(err = %e, "invalid JSON-RPC, skipping"); continue; }
+            };
+
+            let msg = match (raw.method, raw.id) {
+                (Some(method), Some(id)) => IncomingMessage::Request { id, method, params: raw.params },
+                (Some(method), None) => IncomingMessage::Notification { method, params: raw.params },
+                _ => { debug!("ignoring message without method"); continue; }
+            };
+
+            if tx.send(msg).await.is_err() { break; }
+        }
+    }
+
+    async fn channel_writer_task(
+        mut rx: mpsc::Receiver<OutgoingMessage>,
+        tx: mpsc::Sender<Vec<u8>>,
+    ) {
+        while let Some(msg) = rx.recv().await {
+            let json = match serde_json::to_string(&msg) {
+                Ok(j) => j,
+                Err(e) => { error!(err = %e, "failed to serialize outgoing message"); continue; }
+            };
+            debug!(raw = %json, "→ in-process send");
+            let mut bytes = json.into_bytes();
+            bytes.push(b'\n');
+            if tx.send(bytes).await.is_err() { break; }
+        }
+    }
+}
+
+
 pub mod error_codes {
     pub const PARSE_ERROR: i32 = -32700;
     pub const INVALID_REQUEST: i32 = -32600;
@@ -309,5 +398,33 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""jsonrpc":"2.0""#));
         assert!(json.contains(r#""id":1"#));
+    }
+
+    #[tokio::test]
+    async fn inprocess_transport_echo() {
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+
+        let mut transport = InProcessTransport::new(in_rx, out_tx);
+        let sender = transport.sender();
+
+        // Send a request message via the input channel.
+        let msg = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n".to_vec();
+        in_tx.send(msg).await.unwrap();
+
+        // The transport should produce a parsed IncomingMessage.
+        let incoming = transport.recv().await.expect("expected a message");
+        match incoming {
+            IncomingMessage::Request { method, .. } => assert_eq!(method, "initialize"),
+            other => panic!("unexpected message: {:?}", other),
+        }
+
+        // Send a response via the sender and check it arrives on the output channel.
+        let resp = serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"ok":true}});
+        sender.send_response(JsonRpcId::Number(1), resp).await.unwrap();
+
+        let raw_out = out_rx.recv().await.expect("expected response bytes");
+        let text = String::from_utf8(raw_out).unwrap();
+        assert!(text.contains(r#""id":1"#));
     }
 }
