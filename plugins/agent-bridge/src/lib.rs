@@ -7,5 +7,5 @@
 pub mod config;
 pub mod server;
 
-pub use config::BridgeServeConfig;
+pub use config::{BridgeServeConfig, ServeTransport};
 pub use server::BridgeServer;

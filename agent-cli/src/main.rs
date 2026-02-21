@@ -24,7 +24,7 @@ use agent_core::config::AgentConfig;
 use agent_core::session::SessionManager;
 use agent_core::transport::{StdioTransport, Transport};
 use agent_scheduler::Scheduler;
-use agent_bridge::{BridgeServer, BridgeServeConfig};
+use agent_bridge::{BridgeServer, BridgeServeConfig, ServeTransport};
 
 use crate::commands::{Cli, Commands};
 use crate::commands::chat::run_chat_mode;
@@ -78,13 +78,25 @@ async fn run() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_acp_mode(agent_config).await,
-        Commands::Serve { port, tls, bind } => {
+        Commands::Serve { port, tls, bind, transport } => {
             let mut bridge_config = BridgeServeConfig::load()
                 .unwrap_or_default();
             bridge_config.port = port;
             bridge_config.tls = tls;
             if let Some(addr) = bind {
                 bridge_config.bind_addr = addr;
+            }
+            if let Some(mode) = transport {
+                bridge_config.transport = match mode.to_lowercase().as_str() {
+                    "cloudflare" => ServeTransport::Cloudflare,
+                    "tailscale-serve" => ServeTransport::TailscaleServe,
+                    "tailscale-ip"    => ServeTransport::TailscaleIp,
+                    "local"           => ServeTransport::Local,
+                    other => anyhow::bail!(
+                        "unknown transport '{}'. Valid options: local, cloudflare, tailscale-serve, tailscale-ip",
+                        other
+                    ),
+                };
             }
             run_serve_mode(agent_config, bridge_config).await
         }

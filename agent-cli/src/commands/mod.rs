@@ -37,6 +37,10 @@ pub enum Commands {
         /// Bind address (default: 0.0.0.0)
         #[arg(long)]
         bind: Option<String>,
+        /// Network transport mode: local, cloudflare, tailscale-serve, tailscale-ip
+        /// (default: local). Overrides bridge.toml setting.
+        #[arg(long, value_name = "MODE")]
+        transport: Option<String>,
     },
     /// Interactive REPL chat mode
     Chat,
