@@ -93,6 +93,7 @@ async fn run() -> Result<()> {
         port: None, tls: None, bind: None, transport: None,
     }) {
         Commands::Stdio => run_acp_mode(agent_config).await,
+        _ if cli.stdio => run_acp_mode(agent_config).await,
         Commands::Run { port, tls, bind, transport } => {
             // Start from the [serve] section in config.toml (or workspace override).
             // CLI flags take precedence over config file values.

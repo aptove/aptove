@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub workspace: Option<String>,
 
+    /// Start in ACP stdio mode (alias for the `stdio` subcommand; for use with bridge)
+    #[arg(long, global = true, hide = true)]
+    pub stdio: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
