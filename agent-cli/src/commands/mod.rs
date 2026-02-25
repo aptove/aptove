@@ -39,11 +39,9 @@ pub enum Commands {
         /// Bind address (overrides config.toml [serve] bind_addr)
         #[arg(long)]
         bind: Option<String>,
-        /// Network transport mode: local, cloudflare, tailscale-serve, tailscale-ip
-        /// (overrides config.toml [serve] transport)
-        #[arg(long, value_name = "MODE")]
-        transport: Option<String>,
     },
+    /// Show connection QR code (detects whether aptove is already running)
+    ShowQr,
     /// Start in ACP stdio mode (for use with an external bridge)
     Stdio,
     /// Interactive REPL chat mode

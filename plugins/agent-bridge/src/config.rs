@@ -1,11 +1,15 @@
 //! Configuration for the embedded bridge server.
 
 use anyhow::Result;
+use bridge::common_config::CommonConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Unified configuration for `aptove run` — merges agent config fields
 /// with bridge transport/TLS/auth settings.
+///
+/// Transport selection is now driven by [`CommonConfig::enabled_transports()`];
+/// the `transport` field that previously existed here has been removed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BridgeServeConfig {
@@ -19,26 +23,13 @@ pub struct BridgeServeConfig {
     pub tls: bool,
     /// Enable keep-alive agent pool.
     pub keep_alive: bool,
-    /// Transport mode.
-    pub transport: ServeTransport,
+    /// Stable agent identity string (UUID v4), used in pairing responses.
+    /// Loaded from `common.toml` in the bridge config directory; generated
+    /// automatically on first use.
+    pub agent_id: String,
     /// Directory for bridge config files (certs, auth token).
     /// Defaults to `~/.config/aptove/bridge/`.
     pub config_dir: PathBuf,
-}
-
-/// Transport mode for `aptove run`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ServeTransport {
-    /// Local network with self-signed TLS certificate pinning.
-    #[default]
-    Local,
-    /// Cloudflare Zero Trust tunnel.
-    Cloudflare,
-    /// Tailscale via `tailscale serve` (HTTPS, no cert pinning).
-    TailscaleServe,
-    /// Tailscale direct IP with self-signed TLS + cert pinning.
-    TailscaleIp,
 }
 
 impl Default for BridgeServeConfig {
@@ -49,7 +40,7 @@ impl Default for BridgeServeConfig {
             auth_token: None,
             tls: true,
             keep_alive: false,
-            transport: ServeTransport::default(),
+            agent_id: String::new(),
             config_dir: default_config_dir(),
         }
     }
@@ -57,16 +48,30 @@ impl Default for BridgeServeConfig {
 
 impl BridgeServeConfig {
     /// Load config from `config_dir/bridge.toml`, falling back to defaults.
+    ///
+    /// Also reads `common.toml` from the same directory to populate `agent_id`
+    /// (generating and persisting one if absent).
     pub fn load() -> Result<Self> {
-        let path = default_config_dir().join("bridge.toml");
-        if path.exists() {
+        let dir = default_config_dir();
+        let path = dir.join("bridge.toml");
+        let mut cfg = if path.exists() {
             let contents = std::fs::read_to_string(&path)?;
-            let cfg: BridgeServeConfig = toml::from_str(&contents)
-                .map_err(|e| anyhow::anyhow!("Failed to parse bridge.toml: {}", e))?;
-            Ok(cfg)
+            toml::from_str::<BridgeServeConfig>(&contents)
+                .map_err(|e| anyhow::anyhow!("Failed to parse bridge.toml: {}", e))?
         } else {
-            Ok(Self::default())
+            Self::default()
+        };
+
+        // Populate agent_id from common.toml, generating if needed
+        let mut common = CommonConfig::load_from_dir(&dir)?;
+        common.ensure_agent_id();
+        if cfg.agent_id.is_empty() {
+            cfg.agent_id = common.agent_id.clone();
         }
+        // Persist updated common.toml so the agent_id is stable across restarts
+        common.save_to_dir(&dir).ok();
+
+        Ok(cfg)
     }
 
     /// Persist config to `config_dir/bridge.toml`.

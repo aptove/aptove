@@ -16,6 +16,7 @@ dependencies = [
  "anyhow",
  "bridge",
  "dirs",
+ "local-ip-address",
  "serde",
  "serde_json",
  "tempfile",
@@ -415,10 +416,12 @@ dependencies = [
  "tokio-process",
  "tokio-rustls 0.25.0",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "tungstenite",
  "urlencoding",
+ "uuid",
 ]
 
 [[package]]

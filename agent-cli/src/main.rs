@@ -25,7 +25,7 @@ use agent_core::config::AgentConfig;
 use agent_core::session::SessionManager;
 use agent_core::transport::{StdioTransport, Transport};
 use agent_scheduler::Scheduler;
-use agent_bridge::{BridgeServer, BridgeServeConfig, ServeTransport};
+use agent_bridge::{BridgeServer, BridgeServeConfig, CommonConfig};
 
 use crate::commands::{Cli, Commands};
 use crate::commands::chat::run_chat_mode;
@@ -90,15 +90,17 @@ async fn run() -> Result<()> {
     };
 
     match cli.command.unwrap_or(Commands::Run {
-        port: None, tls: None, bind: None, transport: None,
+        port: None, tls: None, bind: None,
     }) {
         Commands::Stdio => run_acp_mode(agent_config).await,
         _ if cli.stdio => run_acp_mode(agent_config).await,
-        Commands::Run { port, tls, bind, transport } => {
+        Commands::ShowQr => run_show_qr().await,
+        Commands::Run { port, tls, bind } => {
             // Start from the [serve] section in config.toml (or workspace override).
             // CLI flags take precedence over config file values.
+            // Transport selection is now read from common.toml via BridgeServeConfig::load().
             let serve = &agent_config.serve;
-            let mut bridge_config = BridgeServeConfig {
+            let bridge_config = BridgeServeConfig {
                 port: port.unwrap_or(serve.port),
                 tls: tls.unwrap_or(serve.tls),
                 bind_addr: bind.unwrap_or_else(|| serve.bind_addr.clone()),
@@ -106,21 +108,6 @@ async fn run() -> Result<()> {
                 keep_alive: serve.keep_alive,
                 ..BridgeServeConfig::default()
             };
-            if let Some(mode) = transport.or_else(|| {
-                let t = serve.transport.as_str();
-                if t == "local" { None } else { Some(t.to_string()) }
-            }) {
-                bridge_config.transport = match mode.to_lowercase().as_str() {
-                    "cloudflare"      => ServeTransport::Cloudflare,
-                    "tailscale-serve" => ServeTransport::TailscaleServe,
-                    "tailscale-ip"    => ServeTransport::TailscaleIp,
-                    "local"           => ServeTransport::Local,
-                    other => anyhow::bail!(
-                        "unknown transport '{}'. Valid options: local, cloudflare, tailscale-serve, tailscale-ip",
-                        other
-                    ),
-                };
-            }
             run_serve_mode(agent_config, bridge_config).await
         }
         Commands::Chat => run_chat_mode(agent_config).await,
@@ -148,6 +135,49 @@ async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>)
             }
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Show QR command (aptove show-qr)
+// ---------------------------------------------------------------------------
+
+async fn run_show_qr() -> Result<()> {
+    use agent_bridge::show_qr_for_local_agent;
+
+    // agent-bridge stores common.toml in the same dir as bridge.toml
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("aptove")
+        .join("bridge");
+
+    let mut config = CommonConfig::load_from_dir(&config_dir)?;
+    config.ensure_agent_id();
+    config.ensure_auth_token();
+    config.save_to_dir(&config_dir)?;
+
+    // Detect if aptove is already running by attempting a TCP connection
+    // (connect is reliable on macOS where SO_REUSEADDR makes bind-based detection fail).
+    let local_port = config
+        .transports
+        .get("local")
+        .and_then(|t| t.port)
+        .unwrap_or(8765);
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], local_port));
+    let is_running = std::net::TcpStream::connect_timeout(
+        &addr,
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok();
+
+    if is_running {
+        show_qr_for_local_agent(&config_dir, &config, local_port)?;
+    } else {
+        eprintln!("Agent is not running. Start it first with: aptove run");
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +330,8 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
 
     let scheduler_store = runtime.scheduler_store().cloned();
     let trigger_store = runtime.trigger_store().cloned();
-    let server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())?;
-    let mut transport = server.transport;
+    let mut server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())?;
+    let mut transport = server.take_transport();
     let sender = transport.get_sender();
 
     let state = Arc::new(AgentState {
@@ -324,11 +354,11 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
         Ok::<_, anyhow::Error>(())
     };
 
-    let bridge_serve = server.bridge.start();
+    let bridge_serve = server.start();
 
     tokio::select! {
         res = agent_loop => { res?; }
-        res = bridge_serve => { res.map_err(|e| anyhow::anyhow!("bridge error: {}", e))?; }
+        res = bridge_serve => { res?; }
     }
 
     state.runtime.read().await.shutdown_plugins().await?;

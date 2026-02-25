@@ -157,6 +157,9 @@ pub struct SystemPromptConfig {
 ///
 /// Configured under `[serve]` in `config.toml` or a workspace's `config.toml`.
 /// CLI flags passed to `aptove run` take precedence over these values.
+///
+/// Transport selection is now driven by `common.toml` (see `CommonConfig`);
+/// the `transport` field previously found here has been removed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServeConfig {
     /// TCP port for the WebSocket bridge server (default 8765).
@@ -168,11 +171,6 @@ pub struct ServeConfig {
     /// Enable TLS with a self-signed certificate (default true).
     #[serde(default = "default_tls")]
     pub tls: bool,
-    /// Network transport mode (default `"local"`).
-    ///
-    /// Accepted values: `"local"`, `"cloudflare"`, `"tailscale-serve"`, `"tailscale-ip"`.
-    #[serde(default = "default_serve_transport")]
-    pub transport: String,
     /// Optional bearer token clients must supply to connect.
     pub auth_token: Option<String>,
     /// Keep a warm agent pool for faster session creation (default false).
@@ -183,7 +181,6 @@ pub struct ServeConfig {
 fn default_serve_port() -> u16 { 8765 }
 fn default_bind_addr() -> String { "0.0.0.0".to_string() }
 fn default_tls() -> bool { true }
-fn default_serve_transport() -> String { "local".to_string() }
 
 impl Default for ServeConfig {
     fn default() -> Self {
@@ -191,7 +188,6 @@ impl Default for ServeConfig {
             port: default_serve_port(),
             bind_addr: default_bind_addr(),
             tls: default_tls(),
-            transport: default_serve_transport(),
             auth_token: None,
             keep_alive: false,
         }
@@ -440,13 +436,13 @@ backoff_multiplier = 2.0
 # Bridge / serve mode settings (used by `aptove run`)
 # These can be overridden per-workspace in:
 #   <data_dir>/workspaces/<uuid>/config.toml
-# CLI flags (--port, --tls, --transport, --bind) take precedence over these values.
+# CLI flags (--port, --tls, --bind) take precedence over these values.
+# Transport selection is configured in common.toml (see `aptove show-qr`).
 #
 # [serve]
 # port = 8765
 # bind_addr = "0.0.0.0"
 # tls = true
-# transport = "local"    # local | cloudflare | tailscale-serve | tailscale-ip
 # auth_token = "secret"  # optional bearer token for WebSocket connections
 # keep_alive = false
 "#
