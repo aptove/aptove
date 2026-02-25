@@ -1,12 +1,12 @@
-//! `BridgeServer` — wires one or more `StdioBridge` instances to an in-process agent transport.
+//! `BridgeServer` — wires a single `StdioBridge` to an in-process agent transport.
 //!
-//! `BridgeServer::build()` reads `CommonConfig` from the config directory and creates one
-//! `StdioBridge` per enabled transport, all sharing the same `AgentHandle::InProcess` channels.
+//! `BridgeServer::build()` reads `CommonConfig` from the config directory, prompts the user
+//! to select a transport when multiple are enabled, then starts exactly one bridge listener.
 
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use agent_core::transport::InProcessTransport;
 use agent_core::trigger::TriggerStore;
@@ -35,17 +35,17 @@ struct BridgeDaemons {
 // BridgeServer
 // ---------------------------------------------------------------------------
 
-/// Manages one in-process transport and one or more bridge listeners.
+/// Manages one in-process transport and one bridge listener.
 ///
 /// Use [`BridgeServer::take_transport`] to extract the `InProcessTransport` for the agent
-/// message loop, then call [`BridgeServer::start`] to run all bridge listeners concurrently.
+/// message loop, then call [`BridgeServer::start`] to run the bridge listener.
 pub struct BridgeServer {
     /// In-process transport for the agent loop to use instead of stdin/stdout.
     /// Take this with [`take_transport`] before calling [`start`].
     transport: Option<InProcessTransport>,
-    /// One bridge listener per enabled transport.
-    bridges: Vec<StdioBridge>,
-    /// External daemon handles (cloudflared, tailscale) that must live as long as the bridges.
+    /// The single active bridge listener.
+    bridge: StdioBridge,
+    /// External daemon handles (cloudflared, tailscale) that must live as long as the bridge.
     _daemons: BridgeDaemons,
 }
 
@@ -68,7 +68,7 @@ impl BridgeServer {
         let transport = InProcessTransport::new(stdin_rx, stdout_tx);
         let stdout_rx_arc = Arc::new(tokio::sync::Mutex::new(stdout_rx));
 
-        // Build webhook resolver (shared across all bridges)
+        // Build webhook resolver
         let webhook_resolver: Option<bridge::bridge::WebhookResolverFn> =
             trigger_store.map(|store| {
                 let store = Arc::clone(&store);
@@ -119,100 +119,95 @@ impl BridgeServer {
             )?;
             return Ok(Self {
                 transport: Some(transport),
-                bridges: vec![bridge],
+                bridge,
                 _daemons: BridgeDaemons::default(),
             });
         }
 
+        // When more than one transport is enabled, ask the user to pick one.
+        let (transport_name, transport_cfg) = if enabled_transports.len() == 1 {
+            enabled_transports.into_iter().next().unwrap()
+        } else {
+            use std::io::Write as _;
+            eprintln!("\nMultiple transports are enabled. Select one to start:");
+            for (i, (name, _)) in enabled_transports.iter().enumerate() {
+                eprintln!("  [{}] {}", i + 1, name);
+            }
+            eprint!("Enter number [1]: ");
+            std::io::stderr().flush().ok();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+            let choice: usize = input.trim().parse().unwrap_or(1);
+            let idx = choice.saturating_sub(1).min(enabled_transports.len() - 1);
+            enabled_transports.into_iter().nth(idx).unwrap()
+        };
+
         let agent_id = common.agent_id.clone();
         let auth_token = common.auth_token.clone();
 
-        let mut bridges: Vec<StdioBridge> = Vec::new();
+        // tailscale-serve defaults to 8766 to avoid conflicting with local (8765).
+        let default_port: u16 = if transport_name == "tailscale-serve" { 8766 } else { config.port };
+        let port = transport_cfg.port.unwrap_or(default_port);
+        let use_tls = transport_cfg.tls.unwrap_or(config.tls);
+
+        // tailscale-serve proxies from Tailscale edge → localhost, so bind
+        // to 127.0.0.1 only; all other transports use the configured bind addr.
+        let effective_bind = if transport_name == "tailscale-serve" {
+            "127.0.0.1".to_string()
+        } else {
+            config.bind_addr.clone()
+        };
+
+        let agent_handle = AgentHandle::InProcess {
+            stdin_tx,
+            stdout_rx: stdout_rx_arc,
+        };
+
+        let (hostname, pm, tls_cfg, ts_guard, cf_runner) = build_transport_for_library(
+            &transport_name,
+            &transport_cfg,
+            &agent_id,
+            &auth_token,
+            port,
+            use_tls,
+            &config.config_dir,
+        )?;
+
+        info!("📡 Transport '{}' → {}", transport_name, hostname);
+
+        let mut bridge = StdioBridge::new(String::new(), port)
+            .with_agent_handle(agent_handle)
+            .with_bind_addr(effective_bind)
+            .with_auth_token(Some(auth_token.clone()));
+
+        if let Some(tls) = tls_cfg {
+            bridge = bridge.with_tls(tls);
+        }
+
+        bridge = bridge.with_pairing(pm);
+
+        if let Some(resolver) = webhook_resolver {
+            bridge = bridge.with_webhook_resolver(resolver);
+        }
+
+        if config.keep_alive {
+            let pool = Arc::new(tokio::sync::RwLock::new(AgentPool::new(PoolConfig::default())));
+            bridge = bridge.with_agent_pool(pool);
+        }
+
         let mut daemons = BridgeDaemons::default();
-        let mut started = 0usize;
-
-        for (transport_name, transport_cfg) in &enabled_transports {
-            let port = transport_cfg.port.unwrap_or(config.port);
-            let use_tls = transport_cfg.tls.unwrap_or(config.tls);
-
-            // Each bridge shares the same in-process channels
-            let agent_handle = AgentHandle::InProcess {
-                stdin_tx: stdin_tx.clone(),
-                stdout_rx: Arc::clone(&stdout_rx_arc),
-            };
-
-            let result = build_transport_for_library(
-                transport_name,
-                transport_cfg,
-                &agent_id,
-                &auth_token,
-                port,
-                use_tls,
-                &config.config_dir,
-            );
-
-            let (hostname, pm, tls_cfg, ts_guard, cf_runner) = match result {
-                Ok(parts) => parts,
-                Err(e) => {
-                    error!("Transport '{}' failed to initialize: {}", transport_name, e);
-                    continue;
-                }
-            };
-
-            info!("📡 Transport '{}' → {}", transport_name, hostname);
-
-            let mut bridge = StdioBridge::new(String::new(), port)
-                .with_agent_handle(agent_handle)
-                .with_bind_addr(config.bind_addr.clone())
-                .with_auth_token(Some(auth_token.clone()));
-
-            if let Some(tls) = tls_cfg {
-                bridge = bridge.with_tls(tls);
-            }
-
-            bridge = bridge.with_pairing(pm);
-
-            if let Some(resolver) = webhook_resolver.clone() {
-                bridge = bridge.with_webhook_resolver(resolver);
-            }
-
-            if config.keep_alive {
-                let pool =
-                    Arc::new(tokio::sync::RwLock::new(AgentPool::new(PoolConfig::default())));
-                bridge = bridge.with_agent_pool(pool);
-            }
-
-            if let Some(runner) = cf_runner {
-                daemons.cloudflared_runners.push(runner);
-            }
-            if let Some(guard) = ts_guard {
-                daemons.tailscale_guards.push(guard);
-            }
-
-            bridges.push(bridge);
-            started += 1;
+        if let Some(runner) = cf_runner {
+            daemons.cloudflared_runners.push(runner);
+        }
+        if let Some(guard) = ts_guard {
+            daemons.tailscale_guards.push(guard);
         }
 
-        if started == 0 {
-            anyhow::bail!(
-                "No bridge transports started successfully. \
-                 Check common.toml and ensure at least one transport is properly configured."
-            );
-        }
-
-        info!(
-            "BridgeServer built with {} transport(s): {}",
-            started,
-            enabled_transports
-                .iter()
-                .map(|(n, _)| n.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        info!("BridgeServer built with transport: {}", transport_name);
 
         Ok(Self {
             transport: Some(transport),
-            bridges,
+            bridge,
             _daemons: daemons,
         })
     }
@@ -224,39 +219,13 @@ impl BridgeServer {
         self.transport.take().expect("transport already taken")
     }
 
-    /// Consume the server and run all bridge listeners concurrently.
+    /// Consume the server and run the bridge listener.
     ///
     /// Keeps daemon processes (cloudflared, tailscale) alive for the duration.
-    /// Returns when the first bridge exits (success or error); aborts remaining bridges.
     pub async fn start(self) -> Result<()> {
-        let Self { bridges, _daemons, .. } = self;
+        let Self { bridge, _daemons, .. } = self;
         // _daemons stays alive until this async fn returns
-
-        let mut join_set = tokio::task::JoinSet::new();
-        for bridge in bridges {
-            join_set.spawn(async move { bridge.start().await });
-        }
-
-        if join_set.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(result) = join_set.join_next().await {
-            join_set.abort_all();
-            match result {
-                Ok(Ok(())) => {
-                    info!("Bridge transport exited cleanly");
-                }
-                Ok(Err(e)) => {
-                    return Err(anyhow::anyhow!("bridge error: {}", e));
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("bridge task panicked: {}", e));
-                }
-            }
-        }
-
-        Ok(())
+        bridge.start().await.map_err(|e| anyhow::anyhow!("bridge error: {}", e))
     }
 }
 
