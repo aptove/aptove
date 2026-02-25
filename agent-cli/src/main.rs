@@ -142,8 +142,6 @@ async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>)
 // ---------------------------------------------------------------------------
 
 async fn run_show_qr() -> Result<()> {
-    use agent_bridge::show_qr_for_local_agent;
-
     // agent-bridge stores common.toml in the same dir as bridge.toml
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -155,26 +153,12 @@ async fn run_show_qr() -> Result<()> {
     config.ensure_auth_token();
     config.save_to_dir(&config_dir)?;
 
-    // Detect if aptove is already running by attempting a TCP connection
-    // (connect is reliable on macOS where SO_REUSEADDR makes bind-based detection fail).
-    let local_port = config
-        .transports
-        .get("local")
-        .and_then(|t| t.port)
-        .unwrap_or(8765);
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], local_port));
-    let is_running = std::net::TcpStream::connect_timeout(
-        &addr,
-        std::time::Duration::from_millis(300),
-    )
-    .is_ok();
-
-    if is_running {
-        show_qr_for_local_agent(&config_dir, &config, local_port)?;
-    } else {
-        eprintln!("Agent is not running. Start it first with: aptove run");
-        std::process::exit(1);
+    match agent_bridge::show_qr(&config_dir, &config)? {
+        true => {}
+        false => {
+            eprintln!("Agent is not running. Start it with: aptove run");
+            std::process::exit(1);
+        }
     }
 
     Ok(())
