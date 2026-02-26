@@ -27,8 +27,9 @@ pub struct BridgeServeConfig {
     /// Loaded from `common.toml` in the bridge config directory; generated
     /// automatically on first use.
     pub agent_id: String,
-    /// Directory for bridge config files (certs, auth token).
-    /// Defaults to `~/.config/aptove/bridge/`.
+    /// Directory for bridge config files (common.toml, TLS certs, auth token).
+    /// Defaults to `~/Library/Application Support/Aptove` on macOS,
+    /// `~/.config/Aptove` on Linux. Shared across all workspaces.
     pub config_dir: PathBuf,
 }
 
@@ -51,6 +52,10 @@ impl BridgeServeConfig {
     ///
     /// Also reads `common.toml` from the same directory to populate `agent_id`
     /// (generating and persisting one if absent).
+    ///
+    /// Default config_dir:
+    /// - macOS: `~/Library/Application Support/Aptove`
+    /// - Linux: `~/.config/Aptove`
     pub fn load() -> Result<Self> {
         let dir = default_config_dir();
         let path = dir.join("bridge.toml");
@@ -86,8 +91,11 @@ impl BridgeServeConfig {
 }
 
 fn default_config_dir() -> PathBuf {
+    // All bridge config files (common.toml, TLS certs, etc.) live directly in
+    // the Aptove application config directory — shared across all workspaces.
+    // macOS: ~/Library/Application Support/Aptove
+    // Linux: ~/.config/Aptove
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("aptove")
-        .join("bridge")
+        .join("Aptove")
 }

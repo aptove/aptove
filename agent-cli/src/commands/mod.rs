@@ -39,8 +39,15 @@ pub enum Commands {
         /// Bind address (overrides config.toml [serve] bind_addr)
         #[arg(long)]
         bind: Option<String>,
+        /// Print connection QR code(s) at startup so you can scan with the Aptove mobile app
+        #[arg(short = 'Q', long)]
+        qr: bool,
     },
-    /// Show connection QR code (detects whether aptove is already running)
+    /// Show connection QR code for a second device to connect to the running agent
+    ///
+    /// Displays the QR code for the currently active transport. Aptove must
+    /// already be running (via `aptove run`). Use this when you need to pair an
+    /// additional device without restarting.
     ShowQr,
     /// Start in ACP stdio mode (for use with an external bridge)
     Stdio,

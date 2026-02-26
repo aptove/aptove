@@ -47,6 +47,14 @@ pub struct BridgeServer {
     bridge: StdioBridge,
     /// External daemon handles (cloudflared, tailscale) that must live as long as the bridge.
     _daemons: BridgeDaemons,
+    /// Name of the transport that was selected and configured (e.g. "local", "cloudflare").
+    selected_transport: String,
+    /// Resolved WebSocket hostname for the selected transport (e.g. "wss://192.168.1.1:8765").
+    hostname: String,
+    /// Pairing manager for generating one-time-code pairing QRs.
+    pairing_manager: Arc<PairingManager>,
+    /// CommonConfig snapshot used when building — for Cloudflare QR payloads.
+    common_config: CommonConfig,
 }
 
 impl BridgeServer {
@@ -112,6 +120,16 @@ impl BridgeServer {
                 stdin_tx,
                 stdout_rx: stdout_rx_arc,
             };
+            let fallback_ip = local_ip_address::local_ip()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| "127.0.0.1".to_string());
+            let fallback_hostname = format!("wss://{}:{}", fallback_ip, config.port);
+            let fallback_pm = Arc::new(PairingManager::new_with_cf(
+                common.agent_id.clone(),
+                fallback_hostname.clone(),
+                common.auth_token.clone(),
+                None, None, None,
+            ));
             let bridge = build_single_bridge_from_config(
                 config,
                 agent_handle,
@@ -121,6 +139,10 @@ impl BridgeServer {
                 transport: Some(transport),
                 bridge,
                 _daemons: BridgeDaemons::default(),
+                selected_transport: "local".to_string(),
+                hostname: fallback_hostname,
+                pairing_manager: fallback_pm,
+                common_config: common,
             });
         }
 
@@ -175,6 +197,8 @@ impl BridgeServer {
 
         info!("📡 Transport '{}' → {}", transport_name, hostname);
 
+        let uses_external_tls = matches!(transport_name.as_str(), "tailscale-serve" | "cloudflare");
+
         let mut bridge = StdioBridge::new(String::new(), port)
             .with_agent_handle(agent_handle)
             .with_bind_addr(effective_bind)
@@ -182,9 +206,15 @@ impl BridgeServer {
 
         if let Some(tls) = tls_cfg {
             bridge = bridge.with_tls(tls);
+        } else if uses_external_tls {
+            bridge = bridge.with_external_tls();
         }
 
+        // with_pairing wraps pm in Arc internally; retrieve it back for show_qr().
         bridge = bridge.with_pairing(pm);
+        let pairing_manager = bridge.pairing_manager()
+            .expect("pairing_manager set above")
+            .clone();
 
         if let Some(resolver) = webhook_resolver {
             bridge = bridge.with_webhook_resolver(resolver);
@@ -209,7 +239,32 @@ impl BridgeServer {
             transport: Some(transport),
             bridge,
             _daemons: daemons,
+            selected_transport: transport_name,
+            hostname,
+            pairing_manager,
+            common_config: common,
         })
+    }
+
+    /// Name of the transport that was selected and configured (e.g. "local", "cloudflare").
+    pub fn selected_transport_name(&self) -> &str {
+        &self.selected_transport
+    }
+
+    /// Display the connection QR code using the same pairing flow as `bridge run --qr`.
+    ///
+    /// - For non-Cloudflare transports: shows a one-time-code pairing QR. The iOS
+    ///   app calls the pairing endpoint, completes the handshake, and receives the
+    ///   `agentId`. This allows the app to deduplicate agents across transports.
+    /// - For Cloudflare: shows a static connection QR (no pairing server needed).
+    pub fn show_qr(&self) -> anyhow::Result<()> {
+        if self.selected_transport == "cloudflare" {
+            let json = self.common_config.to_connection_json(&self.hostname, "cloudflare")?;
+            bridge::qr::display_qr_code(&json, "cloudflare")?;
+        } else {
+            bridge::qr::display_qr_code_with_pairing(&self.hostname, &self.pairing_manager)?;
+        }
+        Ok(())
     }
 
     /// Extract the in-process transport for use in the agent message loop.

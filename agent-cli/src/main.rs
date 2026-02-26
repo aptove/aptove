@@ -90,12 +90,12 @@ async fn run() -> Result<()> {
     };
 
     match cli.command.unwrap_or(Commands::Run {
-        port: None, tls: None, bind: None,
+        port: None, tls: None, bind: None, qr: false,
     }) {
         Commands::Stdio => run_acp_mode(agent_config).await,
         _ if cli.stdio => run_acp_mode(agent_config).await,
         Commands::ShowQr => run_show_qr().await,
-        Commands::Run { port, tls, bind } => {
+        Commands::Run { port, tls, bind, qr } => {
             // Start from the [serve] section in config.toml (or workspace override).
             // CLI flags take precedence over config file values.
             // Transport selection is now read from common.toml via BridgeServeConfig::load().
@@ -108,7 +108,7 @@ async fn run() -> Result<()> {
                 keep_alive: serve.keep_alive,
                 ..BridgeServeConfig::default()
             };
-            run_serve_mode(agent_config, bridge_config).await
+            run_serve_mode(agent_config, bridge_config, qr).await
         }
         Commands::Chat => run_chat_mode(agent_config).await,
         Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
@@ -142,23 +142,24 @@ async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>)
 // ---------------------------------------------------------------------------
 
 async fn run_show_qr() -> Result<()> {
-    // agent-bridge stores common.toml in the same dir as bridge.toml
+    // Bridge config files live in the shared Aptove config directory.
+    // macOS: ~/Library/Application Support/Aptove
+    // Linux: ~/.config/Aptove
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("aptove")
-        .join("bridge");
+        .join("Aptove");
 
     let mut config = CommonConfig::load_from_dir(&config_dir)?;
     config.ensure_agent_id();
     config.ensure_auth_token();
     config.save_to_dir(&config_dir)?;
 
-    match agent_bridge::show_qr(&config_dir, &config)? {
-        true => {}
-        false => {
-            eprintln!("Agent is not running. Start it with: aptove run");
-            std::process::exit(1);
-        }
+    let running = agent_bridge::show_qr(&config_dir, &config)?;
+    if !running {
+        println!("Aptove is not running.");
+        println!();
+        println!("Start it first, then run 'aptove show-qr' to display the connection QR:");
+        println!("  aptove run");
     }
 
     Ok(())
@@ -259,7 +260,7 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
 // Serve mode — embedded bridge + agent in a single process
 // ---------------------------------------------------------------------------
 
-async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -> Result<()> {
+async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig, show_qr: bool) -> Result<()> {
     info!(port = bridge_config.port, tls = bridge_config.tls, "starting Aptove in serve mode");
 
     match config.validate() {
@@ -314,7 +315,23 @@ async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig) -
 
     let scheduler_store = runtime.scheduler_store().cloned();
     let trigger_store = runtime.trigger_store().cloned();
-    let mut server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())?;
+    let mut server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())
+        .map_err(|e| {
+            // Print a clean, actionable error instead of the generic fatal banner.
+            eprintln!("❌ Failed to start transport: {}", e);
+            for cause in e.chain().skip(1) {
+                eprintln!("   {}", cause);
+            }
+            std::process::exit(1);
+        })
+        .unwrap();
+
+    if show_qr {
+        // Use the same pairing QR flow as `bridge run --qr` so the iOS app goes
+        // through the pairing handshake and can deduplicate agents by agentId.
+        server.show_qr()?;
+    }
+
     let mut transport = server.take_transport();
     let sender = transport.get_sender();
 

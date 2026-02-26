@@ -17,8 +17,9 @@ pub use bridge::common_config::{CommonConfig, TransportConfig};
 ///
 /// Probes each enabled transport's listen port. If one accepts a connection the
 /// QR is built from credentials in `config` (no server is started, no pairing
-/// code is issued). Returns `Ok(true)` when a QR was shown, `Ok(false)` when no
-/// transport is currently active (bridge not running).
+/// code is issued). Returns `Ok(true)` when aptove was already running and a QR
+/// was shown for it, `Ok(false)` when no transport was active (aptove not yet
+/// running — caller should fall back to `show_qr_from_config`).
 pub fn show_qr(
     config_dir: &std::path::PathBuf,
     config: &CommonConfig,
@@ -35,6 +36,63 @@ pub fn show_qr(
         }
     }
     Ok(false)
+}
+
+/// Display the QR code for a specific transport directly from config, without
+/// requiring the agent to be running.
+///
+/// Used by `aptove run --qr` to show the QR for whichever transport was selected
+/// at startup (avoiding a second prompt).
+pub fn show_qr_for_transport(
+    transport_name: &str,
+    config_dir: &std::path::PathBuf,
+    config: &CommonConfig,
+) -> anyhow::Result<()> {
+    let cfg = config.transports.get(transport_name)
+        .ok_or_else(|| anyhow::anyhow!("Transport '{}' not found in config", transport_name))?;
+    show_transport_qr(transport_name, cfg, config, config_dir)
+}
+
+/// Display the connection QR code from config, prompting for transport selection
+/// when multiple are enabled. Does not require the agent to be running.
+///
+/// Used by `aptove show-qr` when the agent is not yet running.
+pub fn show_qr_from_config(
+    config_dir: &std::path::PathBuf,
+    config: &CommonConfig,
+) -> anyhow::Result<()> {
+    let transports: Vec<_> = config.enabled_transports()
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+
+    if transports.is_empty() {
+        eprintln!("No transports are enabled in common.toml.");
+        eprintln!("Add a transport section, e.g.:");
+        eprintln!();
+        eprintln!("  [transports.local]");
+        eprintln!("  enabled = true");
+        return Ok(());
+    }
+
+    let (name, cfg) = if transports.len() == 1 {
+        transports.into_iter().next().unwrap()
+    } else {
+        use std::io::Write as _;
+        eprintln!("\nMultiple transports are enabled. Select one to show QR for:");
+        for (i, (name, _)) in transports.iter().enumerate() {
+            eprintln!("  [{}] {}", i + 1, name);
+        }
+        eprint!("Enter number [1]: ");
+        std::io::stderr().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        let choice: usize = input.trim().parse().unwrap_or(1);
+        let idx = choice.saturating_sub(1).min(transports.len() - 1);
+        transports.into_iter().nth(idx).unwrap()
+    };
+
+    show_transport_qr(&name, &cfg, config, config_dir)
 }
 
 /// Build and display a static connection QR for a specific transport.

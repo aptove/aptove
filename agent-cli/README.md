@@ -40,9 +40,15 @@ Binary entry point for the Aptove agent. Compiles to the `aptove` executable.
 Standalone mode — runs the ACP agent and WebSocket bridge in a single process. This is the default when you run `aptove` without arguments.
 
 - Reads serve settings from the `[serve]` section of `config.toml` (port, TLS, transport, etc.).
-- CLI flags (`--port`, `--tls`, `--transport`, `--bind`) override config file values.
+- CLI flags (`--port`, `--tls`, `--bind`) override config file values.
+- Pass `--qr` (or `-Q`) to print the connection QR code at startup for scanning with the Aptove mobile app.
 - With `--workspace <uuid>`, merges the workspace's `config.toml` overlay before starting.
 - See [docs/run-mode.md](../docs/run-mode.md) for full details and transport options.
+
+```bash
+# Start and show QR code for the Aptove app
+aptove run --qr
+```
 
 ### `aptove stdio`
 
@@ -64,6 +70,22 @@ Interactive REPL for direct terminal use.
 - Validates the config on startup and displays provider/model info.
 - Supports slash commands: `/help`, `/clear`, `/context`, `/model`, `/provider`, `/usage`, `/sessions`, `/quit`.
 - Prompt handling is currently a placeholder — production chat mode will wire into the same agent loop used by ACP mode.
+
+### `aptove show-qr`
+
+Displays the connection QR code for a second device to connect to the **running** agent.
+
+- Aptove must already be running (`aptove run`) — this command reads the QR from the active transport.
+- Use this to pair an additional device without restarting the agent.
+- To show the QR at initial startup, use `aptove run --qr` instead.
+
+```bash
+# Start with QR (first device / initial setup)
+aptove run --qr
+
+# Show QR for a second device while agent is already running
+aptove show-qr
+```
 
 ### `aptove config show|init`
 
