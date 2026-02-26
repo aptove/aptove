@@ -8,7 +8,7 @@ description = "Embedded bridge server for aptove — runs agent + WebSocket serv
 
 [dependencies]
 agent-core.workspace = true
-bridge = { path = "../../../bridge" }
+aptove-bridge = "0.1"
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
