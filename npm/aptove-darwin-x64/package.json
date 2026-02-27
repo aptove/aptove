@@ -1,0 +1,16 @@
+{
+  "name": "@aptove/aptove-darwin-x64",
+  "version": "0.1.0",
+  "description": "aptove binary for macOS Intel (x64)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aptove/aptove.git"
+  },
+  "homepage": "https://github.com/aptove/aptove#readme",
+  "keywords": ["aptove", "acp", "agent", "macos", "x64", "intel"],
+  "files": ["bin"],
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "preferUnplugged": true
+}

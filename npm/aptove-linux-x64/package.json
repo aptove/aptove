@@ -1,0 +1,16 @@
+{
+  "name": "@aptove/aptove-linux-x64",
+  "version": "0.1.0",
+  "description": "aptove binary for Linux x64",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aptove/aptove.git"
+  },
+  "homepage": "https://github.com/aptove/aptove#readme",
+  "keywords": ["aptove", "acp", "agent", "linux", "x64"],
+  "files": ["bin"],
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "preferUnplugged": true
+}

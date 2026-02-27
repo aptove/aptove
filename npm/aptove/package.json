@@ -1,0 +1,43 @@
+{
+  "name": "@aptove/aptove",
+  "version": "0.1.0",
+  "description": "ACP AI coding agent — connects to Claude, Gemini, and OpenAI",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aptove/aptove.git"
+  },
+  "homepage": "https://github.com/aptove/aptove#readme",
+  "bugs": {
+    "url": "https://github.com/aptove/aptove/issues"
+  },
+  "keywords": [
+    "acp",
+    "agent",
+    "ai",
+    "claude",
+    "gemini",
+    "openai",
+    "cli"
+  ],
+  "bin": {
+    "aptove": "bin/aptove"
+  },
+  "files": [
+    "bin",
+    "postinstall.js"
+  ],
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@aptove/aptove-darwin-arm64": "0.1.0",
+    "@aptove/aptove-darwin-x64": "0.1.0",
+    "@aptove/aptove-linux-arm64": "0.1.0",
+    "@aptove/aptove-linux-x64": "0.1.0",
+    "@aptove/aptove-win32-x64": "0.1.0"
+  }
+}
