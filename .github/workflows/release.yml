@@ -1,9 +1,10 @@
 name: Release
 
 on:
+  pull_request:
   push:
     tags:
-      - 'v*'
+      - '**[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       version:
@@ -17,8 +18,222 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# =============================================================================
+# CARGO-DIST PIPELINE — GitHub Release (archives, installers, checksums)
+# =============================================================================
+
 jobs:
-  build:
+  plan:
+    runs-on: "ubuntu-22.04"
+    outputs:
+      val: ${{ steps.plan.outputs.manifest }}
+      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
+      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+      publishing: ${{ !github.event.pull_request }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install dist
+        shell: bash
+        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.4/cargo-dist-installer.sh | sh"
+      - name: Cache dist
+        uses: actions/upload-artifact@v6
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/dist
+      - id: plan
+        run: |
+          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          echo "dist ran successfully"
+          cat plan-dist-manifest.json
+          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: "Upload dist-manifest.json"
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-plan-dist-manifest
+          path: plan-dist-manifest.json
+
+  build-local-artifacts:
+    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    needs:
+      - plan
+    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container && matrix.container.image || null }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+    steps:
+      - name: enable windows longpaths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Rust non-interactively if not already installed
+        if: ${{ matrix.container }}
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
+      - name: Install dist
+        run: ${{ matrix.install_dist.run }}
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Install dependencies
+        run: ${{ matrix.packages_install }}
+      - name: Build artifacts
+        run: |
+          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+      - id: cargo-dist
+        name: Post-build
+        shell: bash
+        run: |
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+
+  build-global-artifacts:
+    needs:
+      - plan
+      - build-local-artifacts
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install cached dist
+        uses: actions/download-artifact@v7
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - id: cargo-dist
+        shell: bash
+        run: |
+          dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+          echo "dist ran successfully"
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-build-global
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+
+  host:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: "ubuntu-22.04"
+    outputs:
+      val: ${{ steps.host.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install cached dist
+        uses: actions/download-artifact@v7
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Fetch artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - id: host
+        shell: bash
+        run: |
+          dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
+          echo "artifacts uploaded and released successfully"
+          cat dist-manifest.json
+          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: "Upload dist-manifest.json"
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-dist-manifest
+          path: dist-manifest.json
+      - name: "Download GitHub Artifacts"
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Cleanup
+        run: rm -f artifacts/*-dist-manifest.json
+      - name: Create GitHub Release
+        env:
+          PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
+          ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
+          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
+          RELEASE_COMMIT: "${{ github.sha }}"
+        run: |
+          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+
+  announce:
+    needs:
+      - plan
+      - host
+    if: ${{ always() && needs.host.result == 'success' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+# =============================================================================
+# NPM PIPELINE — publishes to npmjs.com only, no GitHub Release artifacts
+# =============================================================================
+
+  npm-build:
+    name: npm-build (${{ matrix.npm_arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +265,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build release binary
+      - name: Build release binary (Unix)
         if: ${{ matrix.os != 'windows-latest' }}
         run: cargo build --release --target ${{ matrix.target }} -p agent-cli
 
@@ -75,15 +290,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path npm/aptove-${{ matrix.npm_arch }}/bin
           Copy-Item target/${{ matrix.target }}/release/aptove.exe npm/aptove-${{ matrix.npm_arch }}/bin/
 
-      - name: Upload artifact
+      - name: Upload npm artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aptove-${{ matrix.npm_arch }}
+          name: npm-aptove-${{ matrix.npm_arch }}
           path: npm/aptove-${{ matrix.npm_arch }}/
           if-no-files-found: error
 
-  publish:
-    needs: build
+  publish-npm:
+    needs:
+      - host
+      - npm-build
+    if: ${{ always() && needs.host.result == 'success' && needs.npm-build.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -96,10 +314,10 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Download all artifacts
+      - name: Download all npm artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: aptove-*
+          pattern: npm-aptove-*
           path: npm/
           merge-multiple: false
 
@@ -116,7 +334,6 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.version }}
 
-          # Update main package
           cd npm/aptove
           npm version $VERSION --no-git-tag-version --allow-same-version
           node -e "
@@ -130,26 +347,24 @@ jobs:
           "
           cd ../..
 
-          # Update platform packages
           for pkg in aptove-darwin-arm64 aptove-darwin-x64 aptove-linux-arm64 aptove-linux-x64 aptove-win32-x64; do
             cd npm/$pkg
             npm version $VERSION --no-git-tag-version --allow-same-version
             cd ../..
           done
 
+      - name: Copy README to main npm package
+        run: cp README.md npm/aptove/README.md
+
       - name: Verify packages
         run: |
           echo "=== Main package ==="
           cat npm/aptove/package.json
-
           for pkg in aptove-darwin-arm64 aptove-darwin-x64 aptove-linux-arm64 aptove-linux-x64 aptove-win32-x64; do
             echo "=== $pkg ==="
             cat npm/$pkg/package.json
             ls -la npm/$pkg/bin/ 2>/dev/null || true
           done
-
-      - name: Copy README to main npm package
-        run: cp README.md npm/aptove/README.md
 
       - name: Publish platform packages
         env:
@@ -167,15 +382,3 @@ jobs:
         working-directory: npm/aptove
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          generate_release_notes: true
-          files: |
-            npm/aptove-darwin-arm64/bin/aptove
-            npm/aptove-darwin-x64/bin/aptove
-            npm/aptove-linux-arm64/bin/aptove
-            npm/aptove-linux-x64/bin/aptove
-            npm/aptove-win32-x64/bin/aptove.exe
