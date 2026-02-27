@@ -1,5 +1,9 @@
 # Aptove — ACP AI Coding Agent
 
+[![GitHub Release](https://img.shields.io/github/v/release/aptove/aptove?logo=github&label=download)](https://github.com/aptove/aptove/releases/latest)
+[![npm](https://img.shields.io/npm/v/%40aptove%2Faptove?logo=npm&label=npm)](https://www.npmjs.com/package/@aptove/aptove)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/gD7AMxBy9y)
+
 A Rust CLI AI coding agent that speaks the [Agent-Client Protocol (ACP)](https://agentclientprotocol.org), supports multiple LLM providers, and connects to external MCP servers for tool use.
 
 ## Architecture

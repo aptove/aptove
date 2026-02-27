@@ -19,6 +19,8 @@ authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
 version = "0.1.0"
+repository = "https://github.com/aptove/aptove"
+homepage = "https://github.com/aptove/aptove"
 
 [workspace.dependencies]
 # Internal crates
@@ -92,3 +94,8 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # Test utilities
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
