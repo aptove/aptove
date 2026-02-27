@@ -148,6 +148,9 @@ jobs:
             ls -la npm/$pkg/bin/ 2>/dev/null || true
           done
 
+      - name: Copy README to main npm package
+        run: cp README.md npm/aptove/README.md
+
       - name: Publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
