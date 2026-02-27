@@ -23,19 +23,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             npm_arch: darwin-arm64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             npm_arch: darwin-x64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             npm_arch: linux-x64
-          - os: ubuntu-22.04
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             npm_arch: linux-arm64
-            use_cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             npm_arch: win32-x64
@@ -51,20 +50,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross (Linux arm64)
-        if: ${{ matrix.use_cross }}
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build release binary (native)
-        if: ${{ !matrix.use_cross }}
+      - name: Build release binary
+        if: ${{ matrix.os != 'windows-latest' }}
         run: cargo build --release --target ${{ matrix.target }} -p agent-cli
 
-      - name: Build release binary (cross)
-        if: ${{ matrix.use_cross }}
-        run: cross build --release --target ${{ matrix.target }} -p agent-cli
+      - name: Build release binary (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: cargo build --release --target ${{ matrix.target }} -p agent-cli
 
       - name: Strip binary (Unix)
-        if: ${{ matrix.os != 'windows-latest' && !matrix.use_cross }}
+        if: ${{ matrix.os != 'windows-latest' }}
         run: strip target/${{ matrix.target }}/release/aptove
 
       - name: Prepare npm package (Unix)
