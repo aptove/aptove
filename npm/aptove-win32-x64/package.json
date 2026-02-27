@@ -8,9 +8,22 @@
     "url": "https://github.com/aptove/aptove.git"
   },
   "homepage": "https://github.com/aptove/aptove#readme",
-  "keywords": ["aptove", "acp", "agent", "windows", "x64"],
-  "files": ["bin"],
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "keywords": [
+    "aptove",
+    "acp",
+    "agent",
+    "windows",
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "preferUnplugged": true
 }
