@@ -118,7 +118,7 @@ jobs:
 
           # Update main package
           cd npm/aptove
-          npm version $VERSION --no-git-tag-version
+          npm version $VERSION --no-git-tag-version --allow-same-version
           node -e "
             const pkg = require('./package.json');
             pkg.optionalDependencies['@aptove/aptove-darwin-arm64'] = '$VERSION';
@@ -133,7 +133,7 @@ jobs:
           # Update platform packages
           for pkg in aptove-darwin-arm64 aptove-darwin-x64 aptove-linux-arm64 aptove-linux-x64 aptove-win32-x64; do
             cd npm/$pkg
-            npm version $VERSION --no-git-tag-version
+            npm version $VERSION --no-git-tag-version --allow-same-version
             cd ../..
           done
 
