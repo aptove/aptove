@@ -5,7 +5,7 @@ FROM debian:bookworm-slim
 # Install with: brew install --cask container
 # Run with:     container run ghcr.io/aptove/aptove-agent:<version>-darwin-arm64
 
-LABEL org.opencontainers.image.source=https://github.com/aptove/agent
+LABEL org.opencontainers.image.source=https://github.com/aptove/aptove
 LABEL org.opencontainers.image.description="Aptove ACP AI coding agent (Apple Native)"
 LABEL org.opencontainers.image.licenses=Apache-2.0
 

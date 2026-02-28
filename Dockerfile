@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 ARG TARGETARCH
 
-LABEL org.opencontainers.image.source=https://github.com/aptove/agent
+LABEL org.opencontainers.image.source=https://github.com/aptove/aptove
 LABEL org.opencontainers.image.description="Aptove ACP AI coding agent"
 LABEL org.opencontainers.image.licenses=Apache-2.0
 
