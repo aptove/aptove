@@ -126,9 +126,15 @@ Images are published to `ghcr.io/aptove/aptove-agent` on every release.
 # Pull the latest multi-arch image (amd64 + arm64)
 docker pull ghcr.io/aptove/aptove-agent:latest
 
-# Run interactively with config and API key
+# Run interactively with config and API key (Linux host)
 docker run --rm -it \
   -v ~/.config/Aptove:/root/.config/Aptove \
+  -e ANTHROPIC_API_KEY=... \
+  ghcr.io/aptove/aptove-agent:latest chat
+
+# Run interactively with config and API key (macOS host)
+docker run --rm -it \
+  -v "$HOME/Library/Application Support/Aptove":/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
   ghcr.io/aptove/aptove-agent:latest chat
 
@@ -148,9 +154,9 @@ Apple Native runs Linux containers directly via the macOS Virtualization.framewo
 # Install the container CLI
 brew install container  # requires arm64 + macOS 26 (Tahoe)
 
-# Run
+# Run (macOS config lives under ~/Library/Application Support/Aptove)
 container run \
-  -v ~/.config/Aptove:/root/.config/Aptove \
+  -v "$HOME/Library/Application Support/Aptove":/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
   ghcr.io/aptove/aptove-agent:0.1.4-darwin-arm64 chat
 ```
