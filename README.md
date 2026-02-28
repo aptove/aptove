@@ -2,6 +2,7 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/aptove/aptove?logo=github&label=download)](https://github.com/aptove/aptove/releases/latest)
 [![npm](https://img.shields.io/npm/v/%40aptove%2Faptove?logo=npm&label=npm)](https://www.npmjs.com/package/@aptove/aptove)
+[![Build](https://github.com/aptove/aptove/actions/workflows/release.yml/badge.svg)](https://github.com/aptove/aptove/actions/workflows/release.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/gD7AMxBy9y)
 
 A Rust CLI AI coding agent that speaks the [Agent-Client Protocol (ACP)](https://agentclientprotocol.org), supports multiple LLM providers, and connects to external MCP servers for tool use.
@@ -114,6 +115,56 @@ Aptove implements the [ACP protocol](https://agentclientprotocol.org) over stdio
 - `session/cancel` → Cancels an in-flight prompt
 
 Use with [bridge](../bridge/) for WebSocket↔stdio bridging.
+
+## Container Images
+
+Images are published to `ghcr.io/aptove/aptove-agent` on every release.
+
+### Linux / Windows (Docker)
+
+```sh
+# Pull the latest multi-arch image (amd64 + arm64)
+docker pull ghcr.io/aptove/aptove-agent:latest
+
+# Run interactively with config and API key
+docker run --rm -it \
+  -v ~/.config/Aptove:/root/.config/Aptove \
+  -e ANTHROPIC_API_KEY=... \
+  ghcr.io/aptove/aptove-agent:latest chat
+
+# ACP stdio mode (for use with the bridge)
+docker run --rm -i \
+  -e ANTHROPIC_API_KEY=... \
+  ghcr.io/aptove/aptove-agent:latest run
+```
+
+Works on Linux natively and on Windows via Docker Desktop (WSL2 backend).
+
+### macOS (Apple Native)
+
+Apple Native runs Linux containers directly via the macOS Virtualization.framework — no Docker Desktop required.
+
+```sh
+# Install the container CLI
+brew install --cask container
+
+# Run
+container run \
+  -v ~/.config/Aptove:/root/.config/Aptove \
+  -e ANTHROPIC_API_KEY=... \
+  ghcr.io/aptove/aptove-agent:latest-darwin-arm64 chat
+```
+
+### Available Tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Latest stable, multi-arch (amd64 + arm64) |
+| `0.2.0` | Specific version, multi-arch |
+| `0.2.0-linux-amd64` | Linux x64 |
+| `0.2.0-linux-arm64` | Linux arm64 |
+| `0.2.0-darwin-arm64` | macOS Apple Silicon (Apple Native) |
+| `0.2.0-darwin-x64` | macOS Intel (Apple Native) |
 
 ## License
 

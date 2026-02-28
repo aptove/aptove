@@ -1,0 +1,20 @@
+FROM debian:bookworm-slim
+
+# Apple Native containers use the macOS Virtualization.framework to run this
+# Linux image directly — no Docker Desktop required.
+# Install with: brew install --cask container
+# Run with:     container run ghcr.io/aptove/aptove-agent:<version>-darwin-arm64
+
+LABEL org.opencontainers.image.source=https://github.com/aptove/agent
+LABEL org.opencontainers.image.description="Aptove ACP AI coding agent (Apple Native)"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bin/aptove /usr/local/bin/aptove
+RUN chmod +x /usr/local/bin/aptove
+
+ENTRYPOINT ["/usr/local/bin/aptove"]
+CMD ["run"]
