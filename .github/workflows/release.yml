@@ -574,17 +574,17 @@ jobs:
 
       - name: Install Apple container CLI
         run: |
-          # TODO: verify the correct install method for Apple's container CLI.
-          # The cask name 'container' does not exist on Homebrew.
-          # Options to investigate:
-          #   - brew install --cask container-ps (different tool)
-          #   - Download from Apple's GitHub releases directly
-          #   - Pre-installed on macos-latest runner (check: `which container`)
-          # Skipping install for now; job will fail at 'container build' if CLI is absent.
-          if command -v container &>/dev/null; then
-            echo "container CLI found: $(container --version)"
+          # Apple's container CLI is a Homebrew formula (not a cask): brew install container
+          # Requirements: arm64 + macOS >= 26 (Tahoe).
+          # GitHub Actions macos-latest is currently macOS 15 (Sequoia), so this job
+          # will be skipped until GitHub provides a macOS 26 runner.
+          # See: https://apple.github.io/container/documentation/
+          if sw_vers -productVersion | grep -qE '^2[6-9]\.|^[3-9][0-9]\.'; then
+            brew install container
+            container system start
           else
-            echo "::warning::Apple container CLI not found. Install step needs to be resolved — see TODO in workflow."
+            echo "::warning::macOS $(sw_vers -productVersion) detected — Apple container CLI requires macOS 26+. Skipping Apple Native image build."
+            exit 0
           fi
 
       - name: Get version

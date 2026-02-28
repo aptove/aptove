@@ -146,7 +146,7 @@ Apple Native runs Linux containers directly via the macOS Virtualization.framewo
 
 ```sh
 # Install the container CLI
-brew install --cask container
+brew install container  # requires arm64 + macOS 26 (Tahoe)
 
 # Run
 container run \

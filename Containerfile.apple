@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 # Apple Native containers use the macOS Virtualization.framework to run this
 # Linux image directly — no Docker Desktop required.
-# Install with: brew install --cask container
+# Install with: brew install container  (requires arm64 + macOS 26+)
 # Run with:     container run ghcr.io/aptove/aptove-agent:<version>-darwin-arm64
 
 LABEL org.opencontainers.image.source=https://github.com/aptove/aptove
