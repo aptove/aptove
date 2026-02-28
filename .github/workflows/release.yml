@@ -572,23 +572,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Apple container CLI
+      - name: Check macOS version and install Apple container CLI
+        id: setup
         run: |
-          # Apple's container CLI is a Homebrew formula (not a cask): brew install container
-          # Requirements: arm64 + macOS >= 26 (Tahoe).
-          # GitHub Actions macos-latest is currently macOS 15 (Sequoia), so this job
-          # will be skipped until GitHub provides a macOS 26 runner.
+          # Apple's container CLI requires arm64 + macOS 26 (Tahoe).
+          # macos-latest is currently macOS 15 (Sequoia) — skip gracefully until
+          # GitHub provides a macOS 26 runner.
           # See: https://apple.github.io/container/documentation/
           if sw_vers -productVersion | grep -qE '^2[6-9]\.|^[3-9][0-9]\.'; then
             brew install container
             container system start
+            echo "available=true" >> $GITHUB_OUTPUT
           else
-            echo "::warning::macOS $(sw_vers -productVersion) detected — Apple container CLI requires macOS 26+. Skipping Apple Native image build."
-            exit 0
+            echo "::warning::macOS $(sw_vers -productVersion) — Apple container CLI requires macOS 26+. Skipping Apple Native image build."
+            echo "available=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Get version
         id: version
+        if: steps.setup.outputs.available == 'true'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
@@ -597,15 +599,16 @@ jobs:
           fi
 
       - name: Log in to ghcr.io
+        if: steps.setup.outputs.available == 'true'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | container login ghcr.io \
             --username ${{ github.actor }} \
             --password-stdin
 
       - name: Build and push darwin-arm64
+        if: steps.setup.outputs.available == 'true'
         run: |
           mkdir -p bin
-          # Download arm64 binary
           gh run download --name npm-aptove-darwin-arm64 --dir artifact-arm64/
           cp artifact-arm64/bin/aptove bin/aptove
           chmod +x bin/aptove
@@ -619,9 +622,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push darwin-x64
+        if: steps.setup.outputs.available == 'true'
         run: |
           mkdir -p bin
-          # Download x64 binary
           gh run download --name npm-aptove-darwin-x64 --dir artifact-x64/
           cp artifact-x64/bin/aptove bin/aptove
           chmod +x bin/aptove
