@@ -152,7 +152,7 @@ brew install container  # requires arm64 + macOS 26 (Tahoe)
 container run \
   -v ~/.config/Aptove:/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
-  ghcr.io/aptove/aptove-agent:latest-darwin-arm64 chat
+  ghcr.io/aptove/aptove-agent:0.1.4-darwin-arm64 chat
 ```
 
 ### Available Tags
