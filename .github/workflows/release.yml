@@ -574,7 +574,18 @@ jobs:
 
       - name: Install Apple container CLI
         run: |
-          brew install --cask container
+          # TODO: verify the correct install method for Apple's container CLI.
+          # The cask name 'container' does not exist on Homebrew.
+          # Options to investigate:
+          #   - brew install --cask container-ps (different tool)
+          #   - Download from Apple's GitHub releases directly
+          #   - Pre-installed on macos-latest runner (check: `which container`)
+          # Skipping install for now; job will fail at 'container build' if CLI is absent.
+          if command -v container &>/dev/null; then
+            echo "container CLI found: $(container --version)"
+          else
+            echo "::warning::Apple container CLI not found. Install step needs to be resolved — see TODO in workflow."
+          fi
 
       - name: Get version
         id: version
