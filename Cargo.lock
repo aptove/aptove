@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-bridge"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "agent-cli"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-bridge",
  "agent-client-protocol-schema",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "agent-core"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "agent-mcp-bridge"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "agent-plugin-diff"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "agent-plugin-git"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "agent-provider-claude"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "agent-provider-gemini"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "agent-provider-openai"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "agent-scheduler"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "agent-storage-fs"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "agent-core",
  "anyhow",
