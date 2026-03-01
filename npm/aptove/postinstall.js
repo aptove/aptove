@@ -1,12 +1,13 @@
 /**
  * aptove postinstall script
  *
- * Ensures the correct platform-specific binary package is installed.
- * npm sometimes skips optional dependencies during global installs, so
- * we detect this and install the platform package explicitly if needed.
+ * Ensures the platform-specific binary package is installed at the correct version.
+ * npm sometimes skips optional dependencies during global installs, so we detect
+ * this and install the platform package explicitly if needed.
+ * Validates the final binary by running it with --version.
  */
 
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -18,96 +19,150 @@ const PLATFORM_PACKAGES = {
   'win32-x64':    '@aptove/aptove-win32-x64',
 };
 
-function getPlatformPackage() {
-  const platformKey = `${process.platform}-${process.arch}`;
-  return { platformKey, packageName: PLATFORM_PACKAGES[platformKey] };
+function isBinaryPresent(binaryPath) {
+  return fs.existsSync(binaryPath);
 }
 
-const BINARY_NAME = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
-
-// Check via require.resolve (works before install, may use module cache after).
-function isBinaryInstalled(packageName) {
+// Ensures the binary has executable permissions (no-op on Windows).
+function ensureExecutable(binaryPath) {
+  if (process.platform === 'win32') return;
   try {
-    const packagePath = require.resolve(`${packageName}/package.json`);
-    return fs.existsSync(path.join(path.dirname(packagePath), 'bin', BINARY_NAME));
+    fs.chmodSync(binaryPath, 0o755);
   } catch (e) {
-    return false;
+    // best-effort
   }
 }
 
-// Check directly using the prefix path, bypassing Node.js module resolution cache.
-// Used for post-install verification after an explicit `npm install --prefix`.
-function isBinaryInstalledAtPrefix(packageName) {
-  const prefix = process.env.npm_config_prefix;
-  if (!prefix) return false;
-  // Scoped packages: @aptove/aptove-darwin-arm64 → lib/node_modules/@aptove/aptove-darwin-arm64
-  const packageDir = path.join(prefix, 'lib', 'node_modules', ...packageName.split('/'));
-  return fs.existsSync(path.join(packageDir, 'bin', BINARY_NAME));
+// Returns the version string from `aptove --version` (e.g. "0.1.9"), or null on failure.
+function getBinaryVersion(binaryPath) {
+  const result = spawnSync(binaryPath, ['--version'], { stdio: 'pipe' });
+  if (result.error || result.status !== 0) return null;
+  const output = (result.stdout || '').toString().trim(); // e.g. "aptove 0.1.9"
+  const parts = output.split(' ');
+  return parts.length >= 2 ? parts[1] : output;
 }
 
-function getPackageVersion() {
+// Reads the expected platform package version from the main package's optionalDependencies.
+function getExpectedVersion(packageJsonPath) {
   try {
-    const pkg = require('./package.json');
+    delete require.cache[require.resolve(packageJsonPath)];
+    const pkg = require(packageJsonPath);
     // optionalDependencies values are updated by the release workflow to match the published version
     const deps = pkg.optionalDependencies || {};
     const versions = Object.values(deps).filter(v => v !== '*');
     return versions[0] || pkg.version;
   } catch (e) {
-    return 'latest';
+    return null;
   }
 }
 
-function installPlatformPackage(packageName, version) {
-  // During `npm install -g`, npm_config_prefix points to the global prefix (e.g. /usr/local or ~/.nvm/...).
-  // Installing with --prefix ensures the package lands in the same global node_modules tree.
-  const prefix = process.env.npm_config_prefix;
-  const prefixFlag = prefix ? `--prefix "${prefix}"` : '';
-
-  console.log(`  Installing ${packageName}@${version}...`);
-  execSync(
-    `npm install ${prefixFlag} --no-save --no-audit --no-fund "${packageName}@${version}"`,
-    { stdio: 'inherit' }
-  );
-}
-
-function main() {
-  const { platformKey, packageName } = getPlatformPackage();
+/**
+ * Main postinstall logic.
+ *
+ * All I/O is injectable for testing:
+ *   baseDir        — replaces __dirname for computing the sibling binary path
+ *   packageJsonPath— path to the main package's package.json
+ *   platformKey    — override platform detection (default: process.platform-process.arch)
+ *   npmPrefix      — override npm_config_prefix
+ *   installFn      — (packageName, version) => void; throws on failure
+ *                    defaults to running `npm install` via execSync
+ *   log / warn     — console.log / console.warn replacements
+ *   exitFn         — process.exit replacement
+ */
+function main({
+  baseDir = __dirname,
+  packageJsonPath = path.join(__dirname, 'package.json'),
+  platformKey = `${process.platform}-${process.arch}`,
+  npmPrefix = process.env.npm_config_prefix,
+  installFn = null,
+  log = (...a) => console.log(...a),
+  warn = (...a) => console.warn(...a),
+  exitFn = process.exit,
+} = {}) {
+  const packageName = PLATFORM_PACKAGES[platformKey];
 
   if (!packageName) {
-    console.warn(`⚠️  aptove: Unsupported platform ${platformKey}`);
-    console.warn('   Supported: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-x64');
-    return;
+    warn(`⚠️  aptove: unsupported platform ${platformKey}`);
+    exitFn(0); return;
   }
 
-  if (isBinaryInstalled(packageName)) {
-    console.log(`✓ aptove installed successfully for ${platformKey}`);
-    return;
+  const binaryName = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
+  const shortName = packageName.split('/')[1]; // e.g. "aptove-darwin-arm64"
+
+  // postinstall.js lives at @aptove/aptove/postinstall.js
+  // platform binary lives at @aptove/aptove-darwin-arm64/bin/aptove (sibling package)
+  const siblingBinaryPath = path.join(baseDir, '..', shortName, 'bin', binaryName);
+
+  function tryInstall(version) {
+    const fn = installFn || ((pkg, ver) => {
+      const prefixFlag = npmPrefix ? `--prefix "${npmPrefix}"` : '';
+      execSync(
+        `npm install ${prefixFlag} --no-save --no-audit --no-fund "${pkg}@${ver}"`,
+        { stdio: 'inherit' }
+      );
+    });
+    try {
+      log(`  Installing ${packageName}@${version}...`);
+      fn(packageName, version);
+      // GitHub artifact uploads strip execute permissions; restore them.
+      if (isBinaryPresent(siblingBinaryPath)) ensureExecutable(siblingBinaryPath);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
-  // Optional dependency was not installed (common with `npm install -g`).
-  // Install it explicitly.
-  console.log(`⬇  aptove: platform package not found, installing ${packageName}...`);
-  const version = getPackageVersion();
+  const expectedVersion = getExpectedVersion(packageJsonPath);
 
-  try {
-    installPlatformPackage(packageName, version);
-  } catch (e) {
-    console.error(`✗ aptove: failed to install ${packageName}@${version}`);
-    console.error(`  You can install it manually with:`);
-    console.error(`    npm install -g ${packageName}@${version}`);
-    process.exit(1);
-  }
-
-  // After explicit install, verify using the prefix path directly.
-  // require.resolve cannot be used here because Node.js caches negative
-  // module resolution results within the same process.
-  if (isBinaryInstalledAtPrefix(packageName)) {
-    console.log(`✓ aptove installed successfully for ${platformKey}`);
+  if (isBinaryPresent(siblingBinaryPath)) {
+    // Fix permissions in case the binary was published without the execute bit
+    // (GitHub Actions artifacts do not preserve file permissions).
+    ensureExecutable(siblingBinaryPath);
+    const installedVersion = getBinaryVersion(siblingBinaryPath);
+    if (installedVersion && expectedVersion && installedVersion !== expectedVersion) {
+      log(`⬆  aptove: updating platform binary ${installedVersion} → ${expectedVersion}...`);
+      if (!tryInstall(expectedVersion)) {
+        warn(`⚠️  aptove: update failed — run: npm install -g ${packageName}@${expectedVersion}`);
+        exitFn(0); return;
+      }
+    } else {
+      log(`✓ aptove ${installedVersion || '(unknown)'} installed successfully for ${platformKey}`);
+      exitFn(0); return;
+    }
   } else {
-    console.error(`✗ aptove: binary not found after installing ${packageName}`);
-    console.error(`  Try: npm install -g ${packageName}@${version}`);
-    process.exit(1);
+    log(`\n⬇  aptove: platform binary not found, installing ${packageName}...`);
+    if (!tryInstall(expectedVersion || 'latest')) {
+      warn(`\n⚠️  aptove: failed to install ${packageName}`);
+      warn(`   Run manually: npm install -g ${packageName}${expectedVersion ? '@' + expectedVersion : ''}`);
+      exitFn(0); return;
+    }
   }
+
+  // Validate after install using sibling path directly.
+  // (require.resolve cannot be used here — Node.js caches negative module
+  // resolution results within the same process.)
+  if (isBinaryPresent(siblingBinaryPath)) {
+    ensureExecutable(siblingBinaryPath);
+    const installedVersion = getBinaryVersion(siblingBinaryPath);
+    if (installedVersion) {
+      if (expectedVersion && installedVersion !== expectedVersion) {
+        warn(`⚠️  aptove: installed ${installedVersion} but expected ${expectedVersion} (may not be published yet)`);
+      } else {
+        log(`✓ aptove ${installedVersion} installed successfully for ${platformKey}`);
+      }
+    } else {
+      warn(`⚠️  aptove: binary present but failed to run — try: ${siblingBinaryPath} --version`);
+    }
+  } else {
+    warn(`\n⚠️  aptove: binary not found after installation`);
+    warn(`   Run manually: npm install -g ${packageName}${expectedVersion ? '@' + expectedVersion : ''}`);
+  }
+
+  exitFn(0);
 }
 
-main();
+module.exports = { main, PLATFORM_PACKAGES, isBinaryPresent, ensureExecutable, getBinaryVersion, getExpectedVersion };
+
+if (require.main === module) {
+  main();
+}

@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 
-/**
- * aptove - ACP AI coding agent
- *
- * This script finds and executes the platform-specific binary.
- */
-
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -18,60 +12,53 @@ const PLATFORM_PACKAGES = {
   'win32-x64':    '@aptove/aptove-win32-x64',
 };
 
-function getBinaryPath() {
-  const platformKey = `${process.platform}-${process.arch}`;
-  const packageName = PLATFORM_PACKAGES[platformKey];
+const platformKey = `${process.platform}-${process.arch}`;
+const packageName = PLATFORM_PACKAGES[platformKey];
 
-  if (!packageName) {
-    console.error(`Unsupported platform: ${platformKey}`);
-    console.error('Supported platforms: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-x64');
-    process.exit(1);
-  }
-
-  const binaryName = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
-
-  const possiblePaths = [
-    // npm/pnpm hoisted
-    path.join(__dirname, '..', packageName, 'bin', binaryName),
-    // npm nested node_modules
-    path.join(__dirname, '..', '..', packageName, 'bin', binaryName),
-    // pnpm virtual store
-    path.join(__dirname, '..', 'node_modules', packageName, 'bin', binaryName),
-  ];
-
-  for (const binaryPath of possiblePaths) {
-    if (fs.existsSync(binaryPath)) {
-      return binaryPath;
-    }
-  }
-
-  // Try require.resolve as fallback
-  try {
-    const packagePath = require.resolve(`${packageName}/package.json`);
-    const binaryPath = path.join(path.dirname(packagePath), 'bin', binaryName);
-    if (fs.existsSync(binaryPath)) {
-      return binaryPath;
-    }
-  } catch (e) {
-    // Package not found
-  }
-
-  console.error(`Could not find aptove binary for ${platformKey}`);
-  console.error(`Please ensure ${packageName} is installed.`);
-  console.error('');
-  console.error('Try reinstalling with:');
-  console.error('  npm install -g @aptove/aptove');
+if (!packageName) {
+  console.error(`aptove: unsupported platform ${platformKey}`);
+  console.error('Supported: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-x64');
   process.exit(1);
 }
 
-const binaryPath = getBinaryPath();
-const args = process.argv.slice(2);
+const binaryName = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
 
-try {
-  execFileSync(binaryPath, args, { stdio: 'inherit' });
-} catch (error) {
-  if (error.status !== undefined) {
-    process.exit(error.status);
+// Both @aptove/aptove and @aptove/aptove-<platform> live under the same
+// @aptove scope directory, so the platform package is always a sibling:
+//   __dirname = .../node_modules/@aptove/aptove/bin
+//   platform  = .../node_modules/@aptove/aptove-darwin-arm64/bin/aptove
+const shortName = packageName.split('/')[1]; // e.g. "aptove-darwin-arm64"
+const siblingPath = path.join(__dirname, '..', '..', shortName, 'bin', binaryName);
+
+let binaryPath = fs.existsSync(siblingPath) ? siblingPath : null;
+
+// Fallback: require.resolve handles pnpm virtual stores and other layouts
+if (!binaryPath) {
+  try {
+    const pkgJson = require.resolve(`${packageName}/package.json`);
+    const candidate = path.join(path.dirname(pkgJson), 'bin', binaryName);
+    if (fs.existsSync(candidate)) {
+      binaryPath = candidate;
+    }
+  } catch (e) {
+    // not found
   }
-  throw error;
 }
+
+if (!binaryPath) {
+  console.error(`aptove: platform package not installed for ${platformKey}`);
+  console.error('');
+  console.error('Run:');
+  console.error(`  npm install -g ${packageName}`);
+  process.exit(1);
+}
+
+const result = spawnSync(binaryPath, process.argv.slice(2), { stdio: 'inherit' });
+
+if (result.error) {
+  console.error(`aptove: failed to execute binary: ${result.error.message}`);
+  console.error(`  Binary: ${binaryPath}`);
+  process.exit(1);
+}
+
+process.exit(result.status ?? 1);
