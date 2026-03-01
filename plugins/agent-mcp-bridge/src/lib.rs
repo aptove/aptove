@@ -88,6 +88,7 @@ impl McpConnection {
 
     /// Send MCP initialize request.
     async fn initialize(&mut self) -> Result<()> {
+        let version = env!("CARGO_PKG_VERSION");
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": self.next_request_id(),
@@ -97,7 +98,7 @@ impl McpConnection {
                 "capabilities": {},
                 "clientInfo": {
                     "name": "aptove-agent",
-                    "version": "0.1.0"
+                    "version": version
                 }
             }
         });

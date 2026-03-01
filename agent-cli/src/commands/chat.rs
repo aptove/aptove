@@ -76,7 +76,7 @@ pub async fn run_chat_mode(config: AgentConfig) -> Result<()> {
 
     let restored_count = session_data.messages.len();
 
-    eprintln!("🤖 Aptove v0.1.0");
+    eprintln!("🤖 Aptove v{}", env!("CARGO_PKG_VERSION"));
     eprintln!(
         "   Provider: {} | Model: {}",
         provider_name, model

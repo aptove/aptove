@@ -18,7 +18,7 @@ use crate::state::AgentState;
 
 pub async fn handle_initialize(id: JsonRpcId, state: &AgentState) -> Result<()> {
     let response = InitializeResponse::new(ProtocolVersion::LATEST)
-        .agent_info(Implementation::new("Aptove", "0.1.0"))
+        .agent_info(Implementation::new("Aptove", env!("CARGO_PKG_VERSION")))
         .agent_capabilities(AgentCapabilities::default());
 
     let result = serde_json::to_value(&response)

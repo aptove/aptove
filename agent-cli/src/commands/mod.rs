@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "aptove", version = "0.1.0", about = "Aptove — ACP AI Coding Agent")]
+#[command(name = "aptove", version = env!("CARGO_PKG_VERSION"), about = "Aptove — ACP AI Coding Agent")]
 pub struct Cli {
     /// Path to config file
     #[arg(long, global = true)]
