@@ -126,22 +126,31 @@ Images are published to `ghcr.io/aptove/aptove-agent` on every release.
 # Pull the latest multi-arch image (amd64 + arm64)
 docker pull ghcr.io/aptove/aptove-agent:latest
 
-# Run interactively with config and API key (Linux host)
+# Chat mode — Linux host
 docker run --rm -it \
   -v ~/.config/Aptove:/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
   ghcr.io/aptove/aptove-agent:latest chat
 
-# Run interactively with config and API key (macOS host)
+# Chat mode — macOS host (config lives under ~/Library/Application Support/Aptove)
 docker run --rm -it \
   -v "$HOME/Library/Application Support/Aptove":/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
   ghcr.io/aptove/aptove-agent:latest chat
 
-# ACP stdio mode (for use with the bridge)
+# Bridge mode with QR code for mobile pairing
+# --advertise-addr is required in containers: the container gets an internal virtual IP
+# that mobile devices cannot reach. Pass your host machine's real LAN IP instead.
+docker run --rm -it \
+  -p 8765:8765 \
+  -v "$HOME/Library/Application Support/Aptove":/root/.config/Aptove \
+  -e ANTHROPIC_API_KEY=... \
+  ghcr.io/aptove/aptove-agent:latest run --qr --advertise-addr 192.168.1.50
+
+# ACP stdio mode (for use with an external bridge)
 docker run --rm -i \
   -e ANTHROPIC_API_KEY=... \
-  ghcr.io/aptove/aptove-agent:latest run
+  ghcr.io/aptove/aptove-agent:latest stdio
 ```
 
 Works on Linux natively and on Windows via Docker Desktop (WSL2 backend).
