@@ -1,8 +1,9 @@
 /**
  * aptove postinstall script
  *
- * Verifies the correct platform-specific package was installed
- * and the binary is executable.
+ * Ensures the correct platform-specific binary package is installed.
+ * npm sometimes skips optional dependencies during global installs, so
+ * we detect this and install the platform package explicitly if needed.
  */
 
 const { execSync } = require('child_process');
@@ -17,43 +18,81 @@ const PLATFORM_PACKAGES = {
   'win32-x64':    '@aptove/aptove-win32-x64',
 };
 
-function main() {
+function getPlatformPackage() {
   const platformKey = `${process.platform}-${process.arch}`;
-  const packageName = PLATFORM_PACKAGES[platformKey];
+  return { platformKey, packageName: PLATFORM_PACKAGES[platformKey] };
+}
 
-  if (!packageName) {
-    console.warn(`⚠️  aptove: Unsupported platform ${platformKey}`);
-    console.warn('   Supported platforms: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-x64');
-    return;
-  }
-
+function isBinaryInstalled(packageName) {
   try {
     const packagePath = require.resolve(`${packageName}/package.json`);
     const binaryName = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
     const binaryPath = path.join(path.dirname(packagePath), 'bin', binaryName);
-
-    if (!fs.existsSync(binaryPath)) {
-      console.warn(`⚠️  aptove: Binary not found at ${binaryPath}`);
-      return;
-    }
-
-    if (process.platform !== 'win32') {
-      try {
-        fs.chmodSync(binaryPath, 0o755);
-      } catch (e) {
-        // Not critical
-      }
-    }
-
-    try {
-      execSync(`"${binaryPath}" --version`, { stdio: 'pipe' });
-      console.log(`✓ aptove installed successfully for ${platformKey}`);
-    } catch (e) {
-      console.warn(`⚠️  aptove: Binary exists but failed to execute on ${platformKey}`);
-    }
+    return fs.existsSync(binaryPath);
   } catch (e) {
-    console.warn(`⚠️  aptove: Platform package ${packageName} not installed`);
-    console.warn('   This is expected on CI or unsupported platforms');
+    return false;
+  }
+}
+
+function getPackageVersion() {
+  try {
+    const pkg = require('./package.json');
+    // optionalDependencies values are updated by the release workflow to match the published version
+    const deps = pkg.optionalDependencies || {};
+    const versions = Object.values(deps).filter(v => v !== '*');
+    return versions[0] || pkg.version;
+  } catch (e) {
+    return 'latest';
+  }
+}
+
+function installPlatformPackage(packageName, version) {
+  // During `npm install -g`, npm_config_prefix points to the global prefix (e.g. /usr/local or ~/.nvm/...).
+  // Installing with --prefix ensures the package lands in the same global node_modules tree.
+  const prefix = process.env.npm_config_prefix;
+  const prefixFlag = prefix ? `--prefix "${prefix}"` : '';
+
+  console.log(`  Installing ${packageName}@${version}...`);
+  execSync(
+    `npm install ${prefixFlag} --no-save --no-audit --no-fund "${packageName}@${version}"`,
+    { stdio: 'inherit' }
+  );
+}
+
+function main() {
+  const { platformKey, packageName } = getPlatformPackage();
+
+  if (!packageName) {
+    console.warn(`⚠️  aptove: Unsupported platform ${platformKey}`);
+    console.warn('   Supported: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win32-x64');
+    return;
+  }
+
+  if (isBinaryInstalled(packageName)) {
+    console.log(`✓ aptove installed successfully for ${platformKey}`);
+    return;
+  }
+
+  // Optional dependency was not installed (common with `npm install -g`).
+  // Install it explicitly.
+  console.log(`⬇  aptove: platform package not found, installing ${packageName}...`);
+  const version = getPackageVersion();
+
+  try {
+    installPlatformPackage(packageName, version);
+  } catch (e) {
+    console.error(`✗ aptove: failed to install ${packageName}@${version}`);
+    console.error(`  You can install it manually with:`);
+    console.error(`    npm install -g ${packageName}@${version}`);
+    process.exit(1);
+  }
+
+  if (isBinaryInstalled(packageName)) {
+    console.log(`✓ aptove installed successfully for ${platformKey}`);
+  } else {
+    console.error(`✗ aptove: binary not found after installing ${packageName}`);
+    console.error(`  Try: npm install -g ${packageName}@${version}`);
+    process.exit(1);
   }
 }
 

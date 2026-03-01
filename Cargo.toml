@@ -18,7 +18,7 @@ resolver = "2"
 authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
-version = "0.1.5"
+version = "0.1.6"
 repository = "https://github.com/aptove/aptove"
 homepage = "https://github.com/aptove/aptove"
 
