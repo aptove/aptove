@@ -305,7 +305,11 @@ fn build_single_bridge_from_config(
     }
 
     let tls_fingerprint = if config.tls {
-        let tls = TlsConfig::load_or_generate(&config.config_dir, &[])?;
+        let extra_sans: Vec<String> = config.advertise_addr
+            .as_deref()
+            .map(|a| vec![a.to_string()])
+            .unwrap_or_default();
+        let tls = TlsConfig::load_or_generate(&config.config_dir, &extra_sans)?;
         let fp = tls.fingerprint.clone();
         bridge = bridge.with_tls(tls);
         Some(fp)
@@ -458,9 +462,14 @@ fn build_transport_for_library(
         }
 
         _ => {
-            // "local" and any unknown transports — local network with self-signed TLS
+            // "local" and any unknown transports — local network with self-signed TLS.
+            // Include the advertise_addr in the cert SANs so iOS TLS validation passes
+            // when connecting via the LAN IP (e.g. from a container with --advertise-addr).
+            let extra_sans: Vec<String> = advertise_addr
+                .map(|a| vec![a.to_string()])
+                .unwrap_or_default();
             let tls_config = if use_tls {
-                Some(TlsConfig::load_or_generate(config_dir, &[])?)
+                Some(TlsConfig::load_or_generate(config_dir, &extra_sans)?)
             } else {
                 None
             };
