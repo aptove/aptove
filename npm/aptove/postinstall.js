@@ -23,15 +23,26 @@ function getPlatformPackage() {
   return { platformKey, packageName: PLATFORM_PACKAGES[platformKey] };
 }
 
+const BINARY_NAME = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
+
+// Check via require.resolve (works before install, may use module cache after).
 function isBinaryInstalled(packageName) {
   try {
     const packagePath = require.resolve(`${packageName}/package.json`);
-    const binaryName = process.platform === 'win32' ? 'aptove.exe' : 'aptove';
-    const binaryPath = path.join(path.dirname(packagePath), 'bin', binaryName);
-    return fs.existsSync(binaryPath);
+    return fs.existsSync(path.join(path.dirname(packagePath), 'bin', BINARY_NAME));
   } catch (e) {
     return false;
   }
+}
+
+// Check directly using the prefix path, bypassing Node.js module resolution cache.
+// Used for post-install verification after an explicit `npm install --prefix`.
+function isBinaryInstalledAtPrefix(packageName) {
+  const prefix = process.env.npm_config_prefix;
+  if (!prefix) return false;
+  // Scoped packages: @aptove/aptove-darwin-arm64 → lib/node_modules/@aptove/aptove-darwin-arm64
+  const packageDir = path.join(prefix, 'lib', 'node_modules', ...packageName.split('/'));
+  return fs.existsSync(path.join(packageDir, 'bin', BINARY_NAME));
 }
 
 function getPackageVersion() {
@@ -87,7 +98,10 @@ function main() {
     process.exit(1);
   }
 
-  if (isBinaryInstalled(packageName)) {
+  // After explicit install, verify using the prefix path directly.
+  // require.resolve cannot be used here because Node.js caches negative
+  // module resolution results within the same process.
+  if (isBinaryInstalledAtPrefix(packageName)) {
     console.log(`✓ aptove installed successfully for ${platformKey}`);
   } else {
     console.error(`✗ aptove: binary not found after installing ${packageName}`);
