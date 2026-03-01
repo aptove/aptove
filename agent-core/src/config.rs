@@ -176,6 +176,11 @@ pub struct ServeConfig {
     /// Keep a warm agent pool for faster session creation (default false).
     #[serde(default)]
     pub keep_alive: bool,
+    /// Override the IP/hostname advertised in the QR code pairing URL.
+    /// Useful when running inside Docker or Apple Native containers where
+    /// the auto-detected IP is an internal virtual address unreachable from
+    /// mobile devices. Set to the host machine's real LAN IP (e.g. "192.168.1.50").
+    pub advertise_addr: Option<String>,
 }
 
 fn default_serve_port() -> u16 { 8765 }
@@ -190,6 +195,7 @@ impl Default for ServeConfig {
             tls: default_tls(),
             auth_token: None,
             keep_alive: false,
+            advertise_addr: None,
         }
     }
 }
@@ -445,6 +451,7 @@ backoff_multiplier = 2.0
 # tls = true
 # auth_token = "secret"  # optional bearer token for WebSocket connections
 # keep_alive = false
+# advertise_addr = "192.168.1.50"  # override auto-detected LAN IP (useful in containers with -p port forwarding)
 "#
     .to_string()
 }

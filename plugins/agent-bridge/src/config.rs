@@ -23,6 +23,12 @@ pub struct BridgeServeConfig {
     pub tls: bool,
     /// Enable keep-alive agent pool.
     pub keep_alive: bool,
+    /// Override the IP/hostname advertised in the QR code pairing URL.
+    /// Useful when running inside Docker or Apple Native containers where
+    /// `local_ip_address::local_ip()` returns an internal virtual IP.
+    /// Set this to the host machine's real LAN IP (e.g. "192.168.1.50").
+    /// Only affects local transport; Cloudflare and Tailscale are unaffected.
+    pub advertise_addr: Option<String>,
     /// Stable agent identity string (UUID v4), used in pairing responses.
     /// Loaded from `common.toml` in the bridge config directory; generated
     /// automatically on first use.
@@ -41,6 +47,7 @@ impl Default for BridgeServeConfig {
             auth_token: None,
             tls: true,
             keep_alive: false,
+            advertise_addr: None,
             agent_id: String::new(),
             config_dir: default_config_dir(),
         }

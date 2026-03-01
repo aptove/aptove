@@ -155,10 +155,13 @@ Apple Native runs Linux containers directly via the macOS Virtualization.framewo
 brew install container  # requires arm64 + macOS 26 (Tahoe)
 
 # Run (macOS config lives under ~/Library/Application Support/Aptove)
-container run \
+# Use --advertise-addr with your Mac's real LAN IP for local transport QR pairing
+container run -it \
+  --dns 8.8.8.8 \
+  -p 8765:8765 \
   -v "$HOME/Library/Application Support/Aptove":/root/.config/Aptove \
   -e ANTHROPIC_API_KEY=... \
-  ghcr.io/aptove/aptove-agent:0.1.4-darwin-arm64 chat
+  ghcr.io/aptove/aptove-agent:0.1.4-darwin-arm64 run --qr --advertise-addr 192.168.1.50
 ```
 
 ### Available Tags

@@ -90,12 +90,12 @@ async fn run() -> Result<()> {
     };
 
     match cli.command.unwrap_or(Commands::Run {
-        port: None, tls: None, bind: None, qr: false,
+        port: None, tls: None, bind: None, advertise_addr: None, qr: false,
     }) {
         Commands::Stdio => run_acp_mode(agent_config).await,
         _ if cli.stdio => run_acp_mode(agent_config).await,
         Commands::ShowQr => run_show_qr().await,
-        Commands::Run { port, tls, bind, qr } => {
+        Commands::Run { port, tls, bind, advertise_addr, qr } => {
             // Start from the [serve] section in config.toml (or workspace override).
             // CLI flags take precedence over config file values.
             // Transport selection is now read from common.toml via BridgeServeConfig::load().
@@ -104,6 +104,7 @@ async fn run() -> Result<()> {
                 port: port.unwrap_or(serve.port),
                 tls: tls.unwrap_or(serve.tls),
                 bind_addr: bind.unwrap_or_else(|| serve.bind_addr.clone()),
+                advertise_addr: advertise_addr.or_else(|| serve.advertise_addr.clone()),
                 auth_token: serve.auth_token.clone(),
                 keep_alive: serve.keep_alive,
                 ..BridgeServeConfig::default()

@@ -39,6 +39,12 @@ pub enum Commands {
         /// Bind address (overrides config.toml [serve] bind_addr)
         #[arg(long)]
         bind: Option<String>,
+        /// Override the advertised LAN address in the QR code pairing URL.
+        /// Useful when running in Docker or Apple Native containers with -p port
+        /// forwarding, where the auto-detected IP is an internal virtual address.
+        /// Example: --advertise-addr 192.168.1.50
+        #[arg(long)]
+        advertise_addr: Option<String>,
         /// Print connection QR code(s) at startup so you can scan with the Aptove mobile app
         #[arg(short = 'Q', long)]
         qr: bool,

@@ -120,9 +120,11 @@ impl BridgeServer {
                 stdin_tx,
                 stdout_rx: stdout_rx_arc,
             };
-            let fallback_ip = local_ip_address::local_ip()
-                .map(|a| a.to_string())
-                .unwrap_or_else(|_| "127.0.0.1".to_string());
+            let fallback_ip = config.advertise_addr.clone().unwrap_or_else(|| {
+                local_ip_address::local_ip()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| "127.0.0.1".to_string())
+            });
             let fallback_hostname = format!("wss://{}:{}", fallback_ip, config.port);
             let fallback_pm = Arc::new(PairingManager::new_with_cf(
                 common.agent_id.clone(),
@@ -193,6 +195,7 @@ impl BridgeServer {
             port,
             use_tls,
             &config.config_dir,
+            config.advertise_addr.as_deref(),
         )?;
 
         info!("📡 Transport '{}' → {}", transport_name, hostname);
@@ -355,6 +358,7 @@ fn build_transport_for_library(
     port: u16,
     use_tls: bool,
     config_dir: &std::path::PathBuf,
+    advertise_addr: Option<&str>,
 ) -> Result<(
     String,
     PairingManager,
@@ -461,9 +465,12 @@ fn build_transport_for_library(
                 None
             };
             let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
-            let ip = match local_ip_address::local_ip() {
-                Ok(addr) => addr.to_string(),
-                Err(_) => "127.0.0.1".to_string(),
+            let ip = match advertise_addr {
+                Some(addr) => addr.to_string(),
+                None => match local_ip_address::local_ip() {
+                    Ok(addr) => addr.to_string(),
+                    Err(_) => "127.0.0.1".to_string(),
+                },
             };
             let protocol = if tls_config.is_some() { "wss" } else { "ws" };
             let hostname = format!("{}://{}:{}", protocol, ip, port);
