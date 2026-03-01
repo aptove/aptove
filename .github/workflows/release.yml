@@ -293,7 +293,7 @@ jobs:
       - name: Upload npm artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npm-aptove-${{ matrix.npm_arch }}
+          name: aptove-${{ matrix.npm_arch }}
           path: npm/aptove-${{ matrix.npm_arch }}/
           if-no-files-found: error
 
@@ -317,7 +317,7 @@ jobs:
       - name: Download all npm artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: npm-aptove-*
+          pattern: aptove-*
           path: npm/
           merge-multiple: false
 
@@ -429,7 +429,7 @@ jobs:
       - name: Download linux-x64 binary
         uses: actions/download-artifact@v4
         with:
-          name: npm-aptove-linux-x64
+          name: aptove-linux-x64
           path: artifact/
 
       - name: Prepare binary
@@ -489,7 +489,7 @@ jobs:
       - name: Download linux-arm64 binary
         uses: actions/download-artifact@v4
         with:
-          name: npm-aptove-linux-arm64
+          name: aptove-linux-arm64
           path: artifact/
 
       - name: Prepare binary
@@ -609,7 +609,7 @@ jobs:
         if: steps.setup.outputs.available == 'true'
         run: |
           mkdir -p bin
-          gh run download --name npm-aptove-darwin-arm64 --dir artifact-arm64/
+          gh run download --name aptove-darwin-arm64 --dir artifact-arm64/
           cp artifact-arm64/bin/aptove bin/aptove
           chmod +x bin/aptove
 
@@ -625,7 +625,7 @@ jobs:
         if: steps.setup.outputs.available == 'true'
         run: |
           mkdir -p bin
-          gh run download --name npm-aptove-darwin-x64 --dir artifact-x64/
+          gh run download --name aptove-darwin-x64 --dir artifact-x64/
           cp artifact-x64/bin/aptove bin/aptove
           chmod +x bin/aptove
 
