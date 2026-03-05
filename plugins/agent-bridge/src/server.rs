@@ -1,19 +1,20 @@
 //! `BridgeServer` — wires a single `StdioBridge` to an in-process agent transport.
 //!
-//! `BridgeServer::build()` reads `CommonConfig` from the config directory, prompts the user
-//! to select a transport when multiple are enabled, then starts exactly one bridge listener.
+//! `BridgeServer::build()` reads transport settings from [`AgentConfig`],
+//! selects the first enabled transport, then starts exactly one bridge listener.
+//! The TUI's `services/bridge.rs` handles concurrent multi-transport operation.
 
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use agent_core::config::{AgentConfig, TransportCloudflareConfig, TransportLocalConfig, TransportTailscaleIpConfig, TransportTailscaleServeConfig};
 use agent_core::transport::InProcessTransport;
 use agent_core::trigger::TriggerStore;
 use bridge::bridge::{AgentHandle, StdioBridge, WebhookTarget};
 use bridge::cloudflare::{cloudflared_config_path, write_credentials_file, write_cloudflared_config};
 use bridge::cloudflared_runner::CloudflaredRunner;
-use bridge::common_config::{CommonConfig, TransportConfig};
 use bridge::pairing::PairingManager;
 use bridge::tailscale::{get_tailscale_hostname, get_tailscale_ipv4, tailscale_serve_start, TailscaleServeGuard};
 use bridge::tls::TlsConfig;
@@ -41,7 +42,6 @@ struct BridgeDaemons {
 /// message loop, then call [`BridgeServer::start`] to run the bridge listener.
 pub struct BridgeServer {
     /// In-process transport for the agent loop to use instead of stdin/stdout.
-    /// Take this with [`take_transport`] before calling [`start`].
     transport: Option<InProcessTransport>,
     /// The single active bridge listener.
     bridge: StdioBridge,
@@ -49,23 +49,24 @@ pub struct BridgeServer {
     _daemons: BridgeDaemons,
     /// Name of the transport that was selected and configured (e.g. "local", "cloudflare").
     selected_transport: String,
-    /// Resolved WebSocket hostname for the selected transport (e.g. "wss://192.168.1.1:8765").
+    /// Resolved WebSocket hostname for the selected transport.
     hostname: String,
     /// Pairing manager for generating one-time-code pairing QRs.
     pairing_manager: Arc<PairingManager>,
-    /// CommonConfig snapshot used when building — for Cloudflare QR payloads.
-    common_config: CommonConfig,
+    /// AgentConfig snapshot — for QR payload building.
+    agent_config: AgentConfig,
 }
 
 impl BridgeServer {
-    /// Build the bridge server and return the paired in-process transport.
-    pub fn build(config: &BridgeServeConfig) -> Result<Self> {
-        Self::build_with_trigger_store(config, None)
+    /// Build the bridge server from `AgentConfig`.
+    pub fn build(agent_config: &AgentConfig, bridge_config: &BridgeServeConfig) -> Result<Self> {
+        Self::build_with_trigger_store(agent_config, bridge_config, None)
     }
 
     /// Build with an optional `TriggerStore` for webhook token resolution.
     pub fn build_with_trigger_store(
-        config: &BridgeServeConfig,
+        agent_config: &AgentConfig,
+        bridge_config: &BridgeServeConfig,
         trigger_store: Option<Arc<dyn TriggerStore>>,
     ) -> Result<Self> {
         // bridge → agent (replaces stdin)
@@ -100,41 +101,38 @@ impl BridgeServer {
                 resolver
             });
 
-        // Load CommonConfig to get multi-transport settings
-        let mut common = CommonConfig::load_from_dir(&config.config_dir).unwrap_or_default();
-        common.ensure_agent_id();
-        common.ensure_auth_token();
-        // Persist so agent_id / auth_token are stable across restarts
-        common.save_to_dir(&config.config_dir).ok();
+        let agent_id = &agent_config.identity.agent_id;
+        let auth_token = &agent_config.identity.auth_token;
+        let transports = &agent_config.transports;
+        let enabled = transports.enabled_names();
 
-        let enabled_transports: Vec<(String, TransportConfig)> = common
-            .enabled_transports()
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
+        let agent_handle = AgentHandle::InProcess {
+            stdin_tx,
+            stdout_rx: stdout_rx_arc,
+        };
 
-        // Fall back to single-transport from BridgeServeConfig if common.toml has none
-        if enabled_transports.is_empty() {
-            info!("No transports enabled in common.toml; using BridgeServeConfig defaults");
-            let agent_handle = AgentHandle::InProcess {
-                stdin_tx,
-                stdout_rx: stdout_rx_arc,
-            };
-            let fallback_ip = config.advertise_addr.clone().unwrap_or_else(|| {
+        // Fall back to local transport if none are explicitly enabled
+        if enabled.is_empty() {
+            info!("No transports enabled in config; using local defaults");
+            let local_cfg = &transports.local;
+            let fallback_ip = bridge_config.advertise_addr.clone().unwrap_or_else(|| {
                 local_ip_address::local_ip()
                     .map(|a| a.to_string())
                     .unwrap_or_else(|_| "127.0.0.1".to_string())
             });
-            let fallback_hostname = format!("wss://{}:{}", fallback_ip, config.port);
+            let fallback_hostname = format!("wss://{}:{}", fallback_ip, local_cfg.port);
             let fallback_pm = Arc::new(PairingManager::new_with_cf(
-                common.agent_id.clone(),
+                agent_id.clone(),
                 fallback_hostname.clone(),
-                common.auth_token.clone(),
+                auth_token.clone(),
                 None, None, None,
             ));
-            let bridge = build_single_bridge_from_config(
-                config,
+            let bridge = build_local_bridge(
+                local_cfg,
                 agent_handle,
+                bridge_config,
+                agent_id,
+                auth_token,
                 webhook_resolver,
             )?;
             return Ok(Self {
@@ -144,63 +142,80 @@ impl BridgeServer {
                 selected_transport: "local".to_string(),
                 hostname: fallback_hostname,
                 pairing_manager: fallback_pm,
-                common_config: common,
+                agent_config: agent_config.clone(),
             });
         }
 
-        // When more than one transport is enabled, ask the user to pick one.
-        let (transport_name, transport_cfg) = if enabled_transports.len() == 1 {
-            enabled_transports.into_iter().next().unwrap()
-        } else {
-            use std::io::Write as _;
-            eprintln!("\nMultiple transports are enabled. Select one to start:");
-            for (i, (name, _)) in enabled_transports.iter().enumerate() {
-                eprintln!("  [{}] {}", i + 1, name);
+        // Use the first enabled transport (concurrent multi-transport is handled
+        // by the TUI's services/bridge.rs task)
+        let transport_name = enabled[0];
+        if enabled.len() > 1 {
+            warn!(
+                "Multiple transports enabled; starting '{}'. \
+                 Full concurrent transport support is available via the TUI.",
+                transport_name
+            );
+        }
+
+        let config_dir = AgentConfig::data_dir().unwrap_or_else(|_| {
+            dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("Aptove")
+        });
+
+        let (hostname, pm, tls_cfg, ts_guard, cf_runner) = match transport_name {
+            "local" => build_transport_local(
+                &transports.local,
+                agent_id,
+                auth_token,
+                &config_dir,
+                bridge_config.advertise_addr.as_deref(),
+            )?,
+            "tailscale-serve" => build_transport_tailscale_serve(
+                &transports.tailscale_serve,
+                agent_id,
+                auth_token,
+            )?,
+            "tailscale-ip" => build_transport_tailscale_ip(
+                &transports.tailscale_ip,
+                agent_id,
+                auth_token,
+                &config_dir,
+            )?,
+            "cloudflare" => build_transport_cloudflare(
+                &transports.cloudflare,
+                agent_id,
+                auth_token,
+            )?,
+            other => {
+                warn!("Unknown transport '{}'; falling back to local", other);
+                build_transport_local(
+                    &transports.local,
+                    agent_id,
+                    auth_token,
+                    &config_dir,
+                    bridge_config.advertise_addr.as_deref(),
+                )?
             }
-            eprint!("Enter number [1]: ");
-            std::io::stderr().flush().ok();
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).ok();
-            let choice: usize = input.trim().parse().unwrap_or(1);
-            let idx = choice.saturating_sub(1).min(enabled_transports.len() - 1);
-            enabled_transports.into_iter().nth(idx).unwrap()
         };
-
-        let agent_id = common.agent_id.clone();
-        let auth_token = common.auth_token.clone();
-
-        // tailscale-serve defaults to 8766 to avoid conflicting with local (8765).
-        let default_port: u16 = if transport_name == "tailscale-serve" { 8766 } else { config.port };
-        let port = transport_cfg.port.unwrap_or(default_port);
-        let use_tls = transport_cfg.tls.unwrap_or(config.tls);
-
-        // tailscale-serve proxies from Tailscale edge → localhost, so bind
-        // to 127.0.0.1 only; all other transports use the configured bind addr.
-        let effective_bind = if transport_name == "tailscale-serve" {
-            "127.0.0.1".to_string()
-        } else {
-            config.bind_addr.clone()
-        };
-
-        let agent_handle = AgentHandle::InProcess {
-            stdin_tx,
-            stdout_rx: stdout_rx_arc,
-        };
-
-        let (hostname, pm, tls_cfg, ts_guard, cf_runner) = build_transport_for_library(
-            &transport_name,
-            &transport_cfg,
-            &agent_id,
-            &auth_token,
-            port,
-            use_tls,
-            &config.config_dir,
-            config.advertise_addr.as_deref(),
-        )?;
 
         info!("📡 Transport '{}' → {}", transport_name, hostname);
 
-        let uses_external_tls = matches!(transport_name.as_str(), "tailscale-serve" | "cloudflare");
+        let port = match transport_name {
+            "tailscale-serve" => transports.tailscale_serve.port,
+            "tailscale-ip" => transports.tailscale_ip.port,
+            "cloudflare" => transports.local.port, // cloudflare binds locally
+            _ => transports.local.port,
+        };
+
+        // tailscale-serve proxies from Tailscale edge → localhost
+        let effective_bind = if transport_name == "tailscale-serve" {
+            "127.0.0.1".to_string()
+        } else {
+            bridge_config.bind_addr.clone()
+        };
+
+        let uses_external_tls = matches!(transport_name, "tailscale-serve" | "cloudflare");
 
         let mut bridge = StdioBridge::new(String::new(), port)
             .with_agent_handle(agent_handle)
@@ -213,7 +228,6 @@ impl BridgeServer {
             bridge = bridge.with_external_tls();
         }
 
-        // with_pairing wraps pm in Arc internally; retrieve it back for show_qr().
         bridge = bridge.with_pairing(pm);
         let pairing_manager = bridge.pairing_manager()
             .expect("pairing_manager set above")
@@ -223,7 +237,7 @@ impl BridgeServer {
             bridge = bridge.with_webhook_resolver(resolver);
         }
 
-        if config.keep_alive {
+        if bridge_config.keep_alive {
             let pool = Arc::new(tokio::sync::RwLock::new(AgentPool::new(PoolConfig::default())));
             bridge = bridge.with_agent_pool(pool);
         }
@@ -242,27 +256,30 @@ impl BridgeServer {
             transport: Some(transport),
             bridge,
             _daemons: daemons,
-            selected_transport: transport_name,
+            selected_transport: transport_name.to_string(),
             hostname,
             pairing_manager,
-            common_config: common,
+            agent_config: agent_config.clone(),
         })
     }
 
-    /// Name of the transport that was selected and configured (e.g. "local", "cloudflare").
+    /// Name of the transport that was selected and configured.
     pub fn selected_transport_name(&self) -> &str {
         &self.selected_transport
     }
 
-    /// Display the connection QR code using the same pairing flow as `bridge run --qr`.
-    ///
-    /// - For non-Cloudflare transports: shows a one-time-code pairing QR. The iOS
-    ///   app calls the pairing endpoint, completes the handshake, and receives the
-    ///   `agentId`. This allows the app to deduplicate agents across transports.
-    /// - For Cloudflare: shows a static connection QR (no pairing server needed).
+    /// Display the connection QR code using the pairing flow.
     pub fn show_qr(&self) -> anyhow::Result<()> {
         if self.selected_transport == "cloudflare" {
-            let json = self.common_config.to_connection_json(&self.hostname, "cloudflare")?;
+            let cf = &self.agent_config.transports.cloudflare;
+            let url = cf.hostname.replacen("https://", "wss://", 1);
+            let mut map = serde_json::Map::new();
+            map.insert("agentId".into(), serde_json::Value::String(self.agent_config.identity.agent_id.clone()));
+            map.insert("protocol".into(), serde_json::Value::String("acp".into()));
+            map.insert("version".into(), serde_json::Value::String("1.0".into()));
+            map.insert("authToken".into(), serde_json::Value::String(self.agent_config.identity.auth_token.clone()));
+            map.insert("url".into(), serde_json::Value::String(url));
+            let json = serde_json::to_string(&serde_json::Value::Object(map))?;
             bridge::qr::display_qr_code(&json, "cloudflare")?;
         } else {
             bridge::qr::display_qr_code_with_pairing(&self.hostname, &self.pairing_manager)?;
@@ -278,222 +295,213 @@ impl BridgeServer {
     }
 
     /// Consume the server and run the bridge listener.
-    ///
-    /// Keeps daemon processes (cloudflared, tailscale) alive for the duration.
     pub async fn start(self) -> Result<()> {
         let Self { bridge, _daemons, .. } = self;
-        // _daemons stays alive until this async fn returns
         bridge.start().await.map_err(|e| anyhow::anyhow!("bridge error: {}", e))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Single-bridge fallback (when no common.toml transports are configured)
+// Local transport (fallback when BridgeServeConfig is used without AgentConfig)
 // ---------------------------------------------------------------------------
 
-fn build_single_bridge_from_config(
-    config: &BridgeServeConfig,
+fn build_local_bridge(
+    local_cfg: &TransportLocalConfig,
     agent_handle: AgentHandle,
+    bridge_config: &BridgeServeConfig,
+    agent_id: &str,
+    auth_token: &str,
     webhook_resolver: Option<bridge::bridge::WebhookResolverFn>,
 ) -> Result<StdioBridge> {
-    let mut bridge = StdioBridge::new(String::new(), config.port)
-        .with_agent_handle(agent_handle)
-        .with_bind_addr(config.bind_addr.clone());
+    let config_dir = AgentConfig::data_dir().unwrap_or_else(|_| {
+        dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Aptove")
+    });
 
-    if let Some(ref token) = config.auth_token {
-        bridge = bridge.with_auth_token(Some(token.clone()));
-    }
+    let extra_sans: Vec<String> = bridge_config.advertise_addr
+        .as_deref()
+        .map(|a| vec![a.to_string()])
+        .unwrap_or_default();
 
-    let tls_fingerprint = if config.tls {
-        let extra_sans: Vec<String> = config.advertise_addr
-            .as_deref()
-            .map(|a| vec![a.to_string()])
-            .unwrap_or_default();
-        let tls = TlsConfig::load_or_generate(&config.config_dir, &extra_sans)?;
-        let fp = tls.fingerprint.clone();
-        bridge = bridge.with_tls(tls);
-        Some(fp)
+    let tls_config = if local_cfg.tls {
+        Some(TlsConfig::load_or_generate(&config_dir, &extra_sans)?)
     } else {
         None
     };
+    let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
 
-    let auth_token_str = config.auth_token.clone().unwrap_or_default();
-    let ws_url = if config.tls {
-        format!("wss://localhost:{}", config.port)
-    } else {
-        format!("ws://localhost:{}", config.port)
-    };
-    let pairing = PairingManager::new_with_cf(
-        config.agent_id.clone(),
+    let ip = bridge_config.advertise_addr.clone().unwrap_or_else(|| {
+        local_ip_address::local_ip()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "127.0.0.1".to_string())
+    });
+    let protocol = if tls_config.is_some() { "wss" } else { "ws" };
+    let ws_url = format!("{}://{}:{}", protocol, ip, local_cfg.port);
+
+    let pm = PairingManager::new_with_cf(
+        agent_id.to_string(),
         ws_url,
-        auth_token_str,
-        tls_fingerprint,
+        auth_token.to_string(),
+        cert_fingerprint,
         None,
         None,
     );
-    bridge = bridge.with_pairing(pairing);
 
-    if config.keep_alive {
+    let mut bridge = StdioBridge::new(String::new(), local_cfg.port)
+        .with_agent_handle(agent_handle)
+        .with_bind_addr(bridge_config.bind_addr.clone())
+        .with_auth_token(Some(auth_token.to_string()));
+
+    if let Some(tls) = tls_config {
+        bridge = bridge.with_tls(tls);
+    }
+
+    bridge = bridge.with_pairing(pm);
+
+    if bridge_config.keep_alive {
         let pool = Arc::new(tokio::sync::RwLock::new(AgentPool::new(PoolConfig::default())));
         bridge = bridge.with_agent_pool(pool);
     }
 
     if let Some(resolver) = webhook_resolver {
         bridge = bridge.with_webhook_resolver(resolver);
-        info!("webhook resolver registered");
     }
 
-    info!(port = config.port, tls = config.tls, "BridgeServer built (single transport, legacy)");
+    info!(port = local_cfg.port, tls = local_cfg.tls, "BridgeServer built (local transport)");
     Ok(bridge)
 }
 
 // ---------------------------------------------------------------------------
-// Per-transport initialization (library mode)
+// Per-transport initialization
 // ---------------------------------------------------------------------------
 
-/// Initialize transport-specific infrastructure for library/embedded mode.
-///
-/// Returns `(hostname, pairing_manager, tls_config, tailscale_guard, cloudflared_runner)`.
-fn build_transport_for_library(
-    transport_name: &str,
-    transport_cfg: &TransportConfig,
-    agent_id: &str,
-    auth_token: &str,
-    port: u16,
-    use_tls: bool,
-    config_dir: &std::path::PathBuf,
-    advertise_addr: Option<&str>,
-) -> Result<(
-    String,
+type TransportResult = Result<(
+    String,              // hostname / ws url
     PairingManager,
     Option<TlsConfig>,
     Option<TailscaleServeGuard>,
     Option<CloudflaredRunner>,
-)> {
-    match transport_name {
-        "cloudflare" => {
-            let hostname = transport_cfg.hostname.clone().unwrap_or_default();
-            let client_id = transport_cfg.client_id.clone();
-            let client_secret = transport_cfg.client_secret.clone();
+)>;
 
-            let pm = PairingManager::new_with_cf(
-                agent_id.to_string(),
-                hostname.clone(),
-                auth_token.to_string(),
-                None,
-                client_id,
-                client_secret,
-            );
+fn build_transport_local(
+    cfg: &TransportLocalConfig,
+    agent_id: &str,
+    auth_token: &str,
+    config_dir: &std::path::PathBuf,
+    advertise_addr: Option<&str>,
+) -> TransportResult {
+    let extra_sans: Vec<String> = advertise_addr
+        .map(|a| vec![a.to_string()])
+        .unwrap_or_default();
+    let tls_config = if cfg.tls {
+        Some(TlsConfig::load_or_generate(config_dir, &extra_sans)?)
+    } else {
+        None
+    };
+    let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
+    let ip = match advertise_addr {
+        Some(addr) => addr.to_string(),
+        None => local_ip_address::local_ip()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "127.0.0.1".to_string()),
+    };
+    let protocol = if tls_config.is_some() { "wss" } else { "ws" };
+    let hostname = format!("{}://{}:{}", protocol, ip, cfg.port);
+    let pm = PairingManager::new_with_cf(
+        agent_id.to_string(),
+        hostname.clone(),
+        auth_token.to_string(),
+        cert_fingerprint,
+        None,
+        None,
+    );
+    Ok((hostname, pm, tls_config, None, None))
+}
 
-            let tunnel_id = transport_cfg.tunnel_id.clone().unwrap_or_default();
-            let runner = if !tunnel_id.is_empty() {
-                let account_id = transport_cfg.account_id.clone().unwrap_or_default();
-                let tunnel_secret = transport_cfg.tunnel_secret.clone().unwrap_or_default();
-                let credentials_path =
-                    write_credentials_file(&account_id, &tunnel_id, &tunnel_secret)?;
-                let hostname_str = hostname.trim_start_matches("https://");
-                let _ = write_cloudflared_config(&tunnel_id, &credentials_path, hostname_str, port)?;
-                let config_yml = cloudflared_config_path()?;
-                info!("🌐 Starting cloudflared tunnel daemon...");
-                let mut runner = CloudflaredRunner::spawn(&config_yml, &tunnel_id)?;
-                runner.wait_for_ready(std::time::Duration::from_secs(30))?;
-                info!("🌐 Cloudflare tunnel active: {}", hostname);
-                Some(runner)
-            } else {
-                warn!(
-                    "Cloudflare transport: tunnel_id not configured, skipping cloudflared startup"
-                );
-                None
-            };
+fn build_transport_tailscale_serve(
+    cfg: &TransportTailscaleServeConfig,
+    agent_id: &str,
+    auth_token: &str,
+) -> TransportResult {
+    let ts_hostname = get_tailscale_hostname()?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "tailscale-serve mode requires MagicDNS + HTTPS to be enabled on your tailnet."
+        )
+    })?;
+    let hostname = format!("wss://{}", ts_hostname);
+    let pm = PairingManager::new_with_cf(
+        agent_id.to_string(),
+        hostname.clone(),
+        auth_token.to_string(),
+        None,
+        None,
+        None,
+    )
+    .with_tailscale_path();
 
-            Ok((hostname, pm, None, None, runner))
-        }
+    info!("🌐 Starting tailscale serve...");
+    let guard = tailscale_serve_start(cfg.port)?;
+    info!("📡 Tailscale (serve): wss://{}", ts_hostname);
 
-        "tailscale-serve" => {
-            let ts_hostname = get_tailscale_hostname()?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "tailscale-serve mode requires MagicDNS + HTTPS to be enabled on your tailnet."
-                )
-            })?;
-            let hostname = format!("wss://{}", ts_hostname);
+    Ok((hostname, pm, None, Some(guard), None))
+}
 
-            let pm = PairingManager::new_with_cf(
-                agent_id.to_string(),
-                hostname.clone(),
-                auth_token.to_string(),
-                None,
-                None,
-                None,
-            )
-            .with_tailscale_path();
+fn build_transport_tailscale_ip(
+    cfg: &TransportTailscaleIpConfig,
+    agent_id: &str,
+    auth_token: &str,
+    config_dir: &std::path::PathBuf,
+) -> TransportResult {
+    let ts_ip = get_tailscale_ipv4()?;
+    let addr = get_tailscale_hostname()?.unwrap_or_else(|| ts_ip.clone());
+    let tls_config = Some(TlsConfig::load_or_generate(config_dir, &[ts_ip.clone()])?);
+    let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
+    let hostname = format!("wss://{}:{}", addr, cfg.port);
+    let pm = PairingManager::new_with_cf(
+        agent_id.to_string(),
+        hostname.clone(),
+        auth_token.to_string(),
+        cert_fingerprint,
+        None,
+        None,
+    )
+    .with_tailscale_path();
+    Ok((hostname, pm, tls_config, None, None))
+}
 
-            info!("🌐 Starting tailscale serve...");
-            let guard = tailscale_serve_start(port)?;
-            info!("📡 Tailscale (serve): wss://{}", ts_hostname);
+fn build_transport_cloudflare(
+    cfg: &TransportCloudflareConfig,
+    agent_id: &str,
+    auth_token: &str,
+) -> TransportResult {
+    let hostname = cfg.hostname.clone();
+    let pm = PairingManager::new_with_cf(
+        agent_id.to_string(),
+        hostname.clone(),
+        auth_token.to_string(),
+        None,
+        None,
+        None,
+    );
 
-            Ok((hostname, pm, None, Some(guard), None))
-        }
+    let runner = if !cfg.tunnel_id.is_empty() {
+        // Use a fixed local port for cloudflared → bridge connection
+        let local_port: u16 = 8765;
+        let credentials_path =
+            write_credentials_file(&cfg.account_id, &cfg.tunnel_id, &cfg.tunnel_secret)?;
+        let hostname_str = hostname.trim_start_matches("https://");
+        let _ = write_cloudflared_config(&cfg.tunnel_id, &credentials_path, hostname_str, local_port)?;
+        let config_yml = cloudflared_config_path()?;
+        info!("🌐 Starting cloudflared tunnel daemon...");
+        let mut r = CloudflaredRunner::spawn(&config_yml, &cfg.tunnel_id)?;
+        r.wait_for_ready(std::time::Duration::from_secs(30))?;
+        info!("🌐 Cloudflare tunnel active: {}", hostname);
+        Some(r)
+    } else {
+        warn!("Cloudflare transport: tunnel_id not configured, skipping cloudflared startup");
+        None
+    };
 
-        "tailscale-ip" => {
-            let ts_ip = get_tailscale_ipv4()?;
-            let addr = get_tailscale_hostname()?.unwrap_or_else(|| ts_ip.clone());
-            let extra_sans = vec![ts_ip];
-
-            let tls_config = if use_tls {
-                Some(TlsConfig::load_or_generate(config_dir, &extra_sans)?)
-            } else {
-                None
-            };
-            let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
-            let protocol = if tls_config.is_some() { "wss" } else { "ws" };
-            let hostname = format!("{}://{}:{}", protocol, addr, port);
-
-            let pm = PairingManager::new_with_cf(
-                agent_id.to_string(),
-                hostname.clone(),
-                auth_token.to_string(),
-                cert_fingerprint,
-                None,
-                None,
-            )
-            .with_tailscale_path();
-
-            Ok((hostname, pm, tls_config, None, None))
-        }
-
-        _ => {
-            // "local" and any unknown transports — local network with self-signed TLS.
-            // Include the advertise_addr in the cert SANs so iOS TLS validation passes
-            // when connecting via the LAN IP (e.g. from a container with --advertise-addr).
-            let extra_sans: Vec<String> = advertise_addr
-                .map(|a| vec![a.to_string()])
-                .unwrap_or_default();
-            let tls_config = if use_tls {
-                Some(TlsConfig::load_or_generate(config_dir, &extra_sans)?)
-            } else {
-                None
-            };
-            let cert_fingerprint = tls_config.as_ref().map(|t| t.fingerprint.clone());
-            let ip = match advertise_addr {
-                Some(addr) => addr.to_string(),
-                None => match local_ip_address::local_ip() {
-                    Ok(addr) => addr.to_string(),
-                    Err(_) => "127.0.0.1".to_string(),
-                },
-            };
-            let protocol = if tls_config.is_some() { "wss" } else { "ws" };
-            let hostname = format!("{}://{}:{}", protocol, ip, port);
-
-            let pm = PairingManager::new_with_cf(
-                agent_id.to_string(),
-                hostname.clone(),
-                auth_token.to_string(),
-                cert_fingerprint,
-                None,
-                None,
-            );
-
-            Ok((hostname, pm, tls_config, None, None))
-        }
-    }
+    Ok((hostname, pm, None, None, runner))
 }
