@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, watch, RwLock};
 use agent_core::builder::AgentRuntime;
 use agent_core::config::AgentConfig;
 
+use crate::services::bridge::BridgeService;
 use crate::services::tailscale::{TailscaleService, TailscaleStatus};
 use crate::services::cloudflare::{CloudflareService, CloudflareStatus};
 use crate::tabs::Tab;
@@ -90,6 +91,9 @@ impl AppState {
 pub enum AppCommand {
     ToggleTailscale,
     ToggleCloudflare,
+    /// Advance `state.active_transport` to the next enabled transport and
+    /// persist the selection immediately to `config.toml`.
+    CycleActiveTransport,
     SendChatMessage(String),
     CancelChat,
     TriggerJob(String),
@@ -172,6 +176,16 @@ async fn run_app_inner(config: AgentConfig) -> Result<()> {
                 }
             }
         }
+    });
+
+    // Bridge service: waits for active transport readiness, publishes URL
+    let bridge_state = state.clone();
+    let bridge_config = config.clone();
+    let bridge_ts_rx = ts_rx.clone();
+    let bridge_cf_rx = cf_rx.clone();
+    tokio::spawn(async move {
+        let svc = BridgeService::new(bridge_config, bridge_state, bridge_ts_rx, bridge_cf_rx);
+        svc.run().await;
     });
 
     // Command handler task
@@ -314,6 +328,24 @@ async fn handle_commands(
             AppCommand::ToggleCloudflare => {
                 let mut st = state.write().await;
                 st.config.state.cloudflare_enabled = !st.config.state.cloudflare_enabled;
+            }
+            AppCommand::CycleActiveTransport => {
+                let mut st = state.write().await;
+                let all = &["local", "tailscale-serve", "tailscale-ip", "cloudflare"];
+                let enabled: Vec<&str> = all
+                    .iter()
+                    .copied()
+                    .filter(|&n| st.config.transports.enabled_names().contains(&n))
+                    .collect();
+                if !enabled.is_empty() {
+                    let current = st.config.state.active_transport.clone();
+                    let idx = enabled.iter().position(|&n| n == current.as_str()).unwrap_or(0);
+                    let next = enabled[(idx + 1) % enabled.len()];
+                    st.config.state.active_transport = next.to_string();
+                    if let Err(e) = st.config.save() {
+                        tracing::warn!("failed to save active_transport: {}", e);
+                    }
+                }
             }
             AppCommand::SendChatMessage(msg) => {
                 let mut st = state.write().await;

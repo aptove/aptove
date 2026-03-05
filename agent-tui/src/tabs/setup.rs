@@ -1,4 +1,4 @@
-//! Setup tab — Tailscale and Cloudflare panels.
+//! Setup tab — Tailscale, Cloudflare, and Active Transport panels.
 
 use std::sync::Arc;
 
@@ -22,13 +22,30 @@ use crate::services::cloudflare::CloudflareStatus;
 // ---------------------------------------------------------------------------
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+    // Layout: top panels (fill) | transport selector (3 rows) | hint (1 row)
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    render_tailscale_panel(frame, chunks[0], state);
-    render_cloudflare_panel(frame, chunks[1], state);
+    // Top: Tailscale (left) and Cloudflare (right)
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[0]);
+
+    render_tailscale_panel(frame, cols[0], state);
+    render_cloudflare_panel(frame, cols[1], state);
+
+    // Middle: active transport selector
+    render_transport_selector(frame, rows[1], state);
+
+    // Bottom: hint line
+    render_hint_line(frame, rows[2], state);
 }
 
 fn render_tailscale_panel(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -147,6 +164,67 @@ fn render_cloudflare_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(panel, area);
 }
 
+fn render_transport_selector(frame: &mut Frame, area: Rect, state: &AppState) {
+    let active = &state.config.state.active_transport;
+    let enabled = state.config.transports.enabled_names();
+
+    // Build spans: each transport option, highlighted if active
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw("  Active: "));
+
+    let options = ["local", "tailscale-serve", "tailscale-ip", "cloudflare"];
+    for (i, opt) in options.iter().enumerate() {
+        let is_active = active == opt;
+        let is_enabled = enabled.contains(opt);
+
+        let label = match *opt {
+            "local"           => "Local",
+            "tailscale-serve" => "Tailscale (serve)",
+            "tailscale-ip"    => "Tailscale (IP)",
+            "cloudflare"      => "Cloudflare",
+            _                 => opt,
+        };
+
+        let style = if is_active {
+            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+        } else if is_enabled {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let display = format!(" {} ", label);
+        spans.push(Span::styled(display, style));
+
+        if i < options.len() - 1 {
+            spans.push(Span::raw("  "));
+        }
+    }
+
+    spans.push(Span::raw("   "));
+    spans.push(Span::styled("[a] cycle", Style::default().fg(Color::Cyan)));
+
+    let line = Line::from(spans);
+    let para = Paragraph::new(line)
+        .block(Block::default().borders(Borders::ALL).title(" Active Transport "));
+    frame.render_widget(para, area);
+}
+
+fn render_hint_line(frame: &mut Frame, area: Rect, state: &AppState) {
+    let active = &state.config.state.active_transport;
+    let extra = match active.as_str() {
+        "tailscale-serve" | "tailscale-ip" => "  [t] toggle Tailscale",
+        "cloudflare"                        => "  [c] toggle Cloudflare",
+        _                                   => "",
+    };
+    let text = format!("[t] Tailscale  [c] Cloudflare  [a] cycle transport{}", extra);
+    let hint = Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(hint, area);
+}
+
 // ---------------------------------------------------------------------------
 // Key handling
 // ---------------------------------------------------------------------------
@@ -162,6 +240,9 @@ pub async fn handle_key(
         }
         KeyCode::Char('c') => {
             let _ = cmd_tx.send(AppCommand::ToggleCloudflare).await;
+        }
+        KeyCode::Char('a') => {
+            let _ = cmd_tx.send(AppCommand::CycleActiveTransport).await;
         }
         _ => {}
     }
