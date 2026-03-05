@@ -18,7 +18,6 @@ use crate::services::bridge::BridgeService;
 use crate::services::tailscale::{TailscaleService, TailscaleStatus};
 use crate::services::cloudflare::{CloudflareService, CloudflareStatus};
 use crate::tabs::Tab;
-use crate::widgets::status_bar;
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -144,18 +143,16 @@ async fn run_app_inner(config: AgentConfig) -> Result<()> {
     let (cf_tx, cf_rx) = watch::channel(CloudflareStatus::Unknown);
 
     // Spawn Tailscale service
-    let ts_state = state.clone();
     let ts_config = config.clone();
     tokio::spawn(async move {
-        let svc = TailscaleService::new(ts_config, ts_tx, ts_state);
+        let svc = TailscaleService::new(ts_config, ts_tx);
         svc.run().await;
     });
 
     // Spawn Cloudflare service
-    let cf_state = state.clone();
     let cf_config = config.clone();
     tokio::spawn(async move {
-        let svc = CloudflareService::new(cf_config, cf_tx, cf_state);
+        let svc = CloudflareService::new(cf_config, cf_tx);
         svc.run().await;
     });
 

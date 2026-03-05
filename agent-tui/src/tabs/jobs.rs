@@ -18,7 +18,7 @@ use crate::app::{AppCommand, AppState};
 // Render
 // ---------------------------------------------------------------------------
 
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render(frame: &mut Frame, area: Rect, _state: &AppState) {
     let header = Row::new(vec![
         Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Schedule").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
 pub async fn handle_key(
     key: KeyEvent,
     _state: &Arc<RwLock<AppState>>,
-    cmd_tx: &mpsc::Sender<AppCommand>,
+    _cmd_tx: &mpsc::Sender<AppCommand>,
 ) -> Result<()> {
     match key.code {
         KeyCode::Char('r') => {

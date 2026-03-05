@@ -231,7 +231,7 @@ fn render_hint_line(frame: &mut Frame, area: Rect, state: &AppState) {
 
 pub async fn handle_key(
     key: KeyEvent,
-    state: &Arc<RwLock<AppState>>,
+    _state: &Arc<RwLock<AppState>>,
     cmd_tx: &mpsc::Sender<AppCommand>,
 ) -> Result<()> {
     match key.code {

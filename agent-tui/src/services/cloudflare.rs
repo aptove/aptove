@@ -4,15 +4,12 @@
 //! `cloudflared tunnel run`. Monitors health, restarts on unexpected exit
 //! (up to 3 retries with backoff). Broadcasts status via `watch::Sender`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{watch, RwLock};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use agent_core::config::AgentConfig;
-
-use crate::app::AppState;
 
 // ---------------------------------------------------------------------------
 // Status enum
@@ -34,16 +31,14 @@ pub enum CloudflareStatus {
 pub struct CloudflareService {
     config: AgentConfig,
     tx: watch::Sender<CloudflareStatus>,
-    state: Arc<RwLock<AppState>>,
 }
 
 impl CloudflareService {
     pub fn new(
         config: AgentConfig,
         tx: watch::Sender<CloudflareStatus>,
-        state: Arc<RwLock<AppState>>,
     ) -> Self {
-        Self { config, tx, state }
+        Self { config, tx }
     }
 
     pub async fn run(self) {

@@ -6,15 +6,12 @@
 //! On launch: if `state.tailscale_enabled`, starts `tailscaled` (checks socket
 //! first), runs `tailscale set --operator=$USER`, then runs `tailscale up`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{watch, RwLock};
-use tracing::{info, warn};
+use tokio::sync::watch;
+use tracing::info;
 
 use agent_core::config::AgentConfig;
-
-use crate::app::AppState;
 
 // ---------------------------------------------------------------------------
 // Status enum
@@ -36,16 +33,14 @@ pub enum TailscaleStatus {
 pub struct TailscaleService {
     config: AgentConfig,
     tx: watch::Sender<TailscaleStatus>,
-    state: Arc<RwLock<AppState>>,
 }
 
 impl TailscaleService {
     pub fn new(
         config: AgentConfig,
         tx: watch::Sender<TailscaleStatus>,
-        state: Arc<RwLock<AppState>>,
     ) -> Self {
-        Self { config, tx, state }
+        Self { config, tx }
     }
 
     pub async fn run(self) {
