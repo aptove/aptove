@@ -198,6 +198,15 @@ pub struct AppStateConfig {
     /// Whether the Cloudflare tunnel should start on launch.
     #[serde(default)]
     pub cloudflare_enabled: bool,
+    /// The currently selected transport. One of: "local", "tailscale-serve",
+    /// "tailscale-ip", "cloudflare". Both TUI and headless modes use this to
+    /// determine which single transport to start. Default: "local".
+    #[serde(default = "default_active_transport")]
+    pub active_transport: String,
+    /// Resolved WebSocket URL of the active transport, populated after the
+    /// bridge starts. Used by the Connect tab QR code. Empty until connected.
+    #[serde(default)]
+    pub active_transport_url: String,
 }
 
 impl Default for AppStateConfig {
@@ -206,11 +215,14 @@ impl Default for AppStateConfig {
             last_tab: default_last_tab(),
             tailscale_enabled: false,
             cloudflare_enabled: false,
+            active_transport: default_active_transport(),
+            active_transport_url: String::new(),
         }
     }
 }
 
 fn default_last_tab() -> String { "Setup".to_string() }
+fn default_active_transport() -> String { "local".to_string() }
 fn default_true() -> bool { true }
 fn default_local_port() -> u16 { 8765 }
 fn default_ts_serve_port() -> u16 { 8766 }

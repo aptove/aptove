@@ -11,6 +11,7 @@ mod dispatch;
 mod handlers;
 mod runtime;
 mod state;
+mod transport_lifecycle;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,7 +128,7 @@ async fn run_tui_mode(config: AgentConfig) -> Result<()> {
 // Headless mode — bridge + scheduler, no TUI (replaces old `aptove run`)
 // ---------------------------------------------------------------------------
 
-async fn run_headless_mode(config: AgentConfig) -> Result<()> {
+async fn run_headless_mode(mut config: AgentConfig) -> Result<()> {
     info!(provider = %config.provider, "starting Aptove in headless mode");
 
     match config.validate() {
@@ -141,6 +142,11 @@ async fn run_headless_mode(config: AgentConfig) -> Result<()> {
             anyhow::bail!("{}", e);
         }
     }
+
+    // Start the daemon required by the active transport (Tailscale, etc.) and
+    // wait for it to be ready before building the bridge listener.
+    let _transport_guard = transport_lifecycle::prepare(&mut config).await
+        .context("failed to prepare active transport")?;
 
     let mut runtime = build_runtime(config.clone()).await
         .context("failed to initialize agent runtime")?;
@@ -236,6 +242,7 @@ async fn run_headless_mode(config: AgentConfig) -> Result<()> {
     }
 
     state.runtime.read().await.shutdown_plugins().await?;
+    _transport_guard.shutdown().await;
     Ok(())
 }
 

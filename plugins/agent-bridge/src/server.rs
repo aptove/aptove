@@ -146,16 +146,20 @@ impl BridgeServer {
             });
         }
 
-        // Use the first enabled transport (concurrent multi-transport is handled
-        // by the TUI's services/bridge.rs task)
-        let transport_name = enabled[0];
-        if enabled.len() > 1 {
-            warn!(
-                "Multiple transports enabled; starting '{}'. \
-                 Full concurrent transport support is available via the TUI.",
-                transport_name
-            );
-        }
+        // Use the transport selected by the user (stored in state.active_transport).
+        // Fall back to the first enabled transport if the selection is invalid.
+        let active = agent_config.state.active_transport.as_str();
+        let transport_name = if !active.is_empty() && enabled.contains(&active) {
+            active
+        } else {
+            if !active.is_empty() {
+                warn!(
+                    "active_transport '{}' is not enabled; falling back to '{}'",
+                    active, enabled[0]
+                );
+            }
+            enabled[0]
+        };
 
         let config_dir = AgentConfig::data_dir().unwrap_or_else(|_| {
             dirs::config_dir()
