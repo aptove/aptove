@@ -2,6 +2,7 @@
 members = [
     "agent-core",
     "agent-cli",
+    "agent-tui",
     "plugins/agent-provider-claude",
     "plugins/agent-provider-gemini",
     "plugins/agent-provider-openai",
@@ -25,6 +26,7 @@ homepage = "https://github.com/aptove/aptove"
 [workspace.dependencies]
 # Internal crates
 agent-core = { path = "agent-core" }
+agent-tui = { path = "agent-tui" }
 agent-bridge = { path = "plugins/agent-bridge" }
 agent-storage-fs = { path = "plugins/agent-storage-fs" }
 agent-scheduler = { path = "plugins/agent-scheduler" }

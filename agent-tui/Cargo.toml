@@ -1,0 +1,30 @@
+[package]
+name = "agent-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Full-screen TUI for the Aptove ACP agent (Ratatui + Crossterm)"
+
+[dependencies]
+agent-core.workspace = true
+agent-bridge.workspace = true
+agent-scheduler.workspace = true
+agent-storage-fs.workspace = true
+agent-provider-claude.workspace = true
+agent-provider-gemini.workspace = true
+agent-provider-openai.workspace = true
+agent-mcp-bridge.workspace = true
+
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+
+ratatui = "0.26"
+crossterm = { version = "0.27", features = ["event-stream"] }
+qrcode = "0.14"
+local-ip-address = "0.6"
+which.workspace = true

@@ -1,11 +1,10 @@
 //! Aptove Agent CLI
 //!
-//! Binary entry point. Provides multiple modes:
-//! - `run` (default): Standalone mode — ACP agent + WebSocket bridge in one process
-//! - `stdio`: ACP stdio mode for use with an external bridge or ACP client
-//! - `chat`: Interactive REPL with slash commands
-//! - `workspace`: Workspace management commands
-//! - `config`: Configuration management
+//! Entry point. Default behaviour:
+//! - `aptove`           → full-screen TUI (implemented in agent-tui crate)
+//! - `aptove --headless`→ ACP bridge + scheduler without TUI
+//! - `aptove --stdio`   → ACP stdio mode for use with an external bridge
+//! - `aptove workspace` / `config` / `jobs` / `triggers` → management subcommands
 
 mod commands;
 mod dispatch;
@@ -25,10 +24,10 @@ use agent_core::config::AgentConfig;
 use agent_core::session::SessionManager;
 use agent_core::transport::{StdioTransport, Transport};
 use agent_scheduler::Scheduler;
-use agent_bridge::{BridgeServer, BridgeServeConfig, CommonConfig};
+use agent_bridge::{BridgeServer, BridgeServeConfig};
+use agent_tui;
 
 use crate::commands::{Cli, Commands};
-use crate::commands::chat::run_chat_mode;
 use crate::commands::config::run_config_command;
 use crate::commands::jobs::run_jobs_command;
 use crate::commands::triggers::run_triggers_command;
@@ -44,8 +43,6 @@ use crate::state::AgentState;
 #[tokio::main]
 async fn main() {
     // All logging goes to stderr (stdout is for JSON-RPC).
-    // Disable ANSI color codes when stderr is not a real terminal
-    // (e.g. when captured by the bridge) to avoid raw \x1b[…] in logs.
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -57,7 +54,6 @@ async fn main() {
         .init();
 
     if let Err(e) = run().await {
-        // Print the full error chain for clear diagnostics
         eprintln!("❌ Aptove fatal error: {}", e);
         for cause in e.chain().skip(1) {
             eprintln!("   caused by: {}", cause);
@@ -69,7 +65,7 @@ async fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load global config (explicit path or default location)
+    // Load global config
     let base_config = if let Some(ref path) = cli.config {
         AgentConfig::load_from(path)
             .map_err(|e| anyhow::anyhow!("failed to load config from '{}': {}", path.display(), e))?
@@ -77,9 +73,8 @@ async fn run() -> Result<()> {
         AgentConfig::load_default()?
     };
 
-    // If a specific workspace is given, merge its config.toml on top of the global config.
-    // This lets workspace/config.toml override any [serve] (or other) settings.
-    let agent_config = if let Some(ref uuid) = cli.workspace {
+    // Merge workspace config overlay (strips identity/transports/state per ownership rules)
+    let mut agent_config = if let Some(ref uuid) = cli.workspace {
         let ws_config_path = AgentConfig::data_dir()?
             .join("workspaces")
             .join(uuid)
@@ -89,85 +84,163 @@ async fn run() -> Result<()> {
         base_config
     };
 
-    match cli.command.unwrap_or(Commands::Run {
-        port: None, tls: None, bind: None, advertise_addr: None, qr: false,
-    }) {
-        Commands::Stdio => run_acp_mode(agent_config).await,
-        _ if cli.stdio => run_acp_mode(agent_config).await,
-        Commands::ShowQr => run_show_qr().await,
-        Commands::Run { port, tls, bind, advertise_addr, qr } => {
-            // Start from the [serve] section in config.toml (or workspace override).
-            // CLI flags take precedence over config file values.
-            // Transport selection is now read from common.toml via BridgeServeConfig::load().
-            let serve = &agent_config.serve;
-            let bridge_config = BridgeServeConfig {
-                port: port.unwrap_or(serve.port),
-                tls: tls.unwrap_or(serve.tls),
-                bind_addr: bind.unwrap_or_else(|| serve.bind_addr.clone()),
-                advertise_addr: advertise_addr.or_else(|| serve.advertise_addr.clone()),
-                auth_token: serve.auth_token.clone(),
-                keep_alive: serve.keep_alive,
-                ..BridgeServeConfig::default()
-            };
-            run_serve_mode(agent_config, bridge_config, qr).await
-        }
-        Commands::Chat => run_chat_mode(agent_config).await,
-        Commands::Workspace { action } => run_workspace_command(action, agent_config).await,
-        Commands::Config { action } => run_config_command(action, agent_config),
-        Commands::Jobs { action } => run_jobs_command(action, agent_config).await,
-        Commands::Triggers { action } => run_triggers_command(action, agent_config).await,
+    // Ensure identity (agent_id + auth_token) is populated; save if newly generated
+    agent_config.ensure_identity();
+
+    // Dispatch to appropriate mode
+    match cli.command {
+        Some(Commands::Stdio) | None if cli.stdio => run_acp_mode(agent_config).await,
+        None if cli.headless => run_headless_mode(agent_config).await,
+        None => run_tui_mode(agent_config).await,
+        Some(Commands::Stdio) => run_acp_mode(agent_config).await,
+        Some(Commands::Workspace { action }) => run_workspace_command(action, agent_config).await,
+        Some(Commands::Config { action }) => run_config_command(action, agent_config),
+        Some(Commands::Jobs { action }) => run_jobs_command(action, agent_config).await,
+        Some(Commands::Triggers { action }) => run_triggers_command(action, agent_config).await,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Shared message dispatch loop
+// TUI mode (default)
 // ---------------------------------------------------------------------------
 
-/// Drive a transport's receive loop, spawning a handler task per message.
-async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>) {
-    while let Some(msg) = transport.recv().await {
-        let state = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_message(msg, &state).await {
-                error!(err = %e, "error handling message");
-                for cause in e.chain().skip(1) {
-                    error!("  caused by: {}", cause);
+async fn run_tui_mode(config: AgentConfig) -> Result<()> {
+    match config.validate() {
+        Ok(warnings) => {
+            for w in &warnings {
+                tracing::warn!("⚠️  {}", w);
+            }
+        }
+        Err(e) => {
+            error!("configuration validation failed: {:#}", e);
+            anyhow::bail!("{}", e);
+        }
+    }
+
+    let runtime = build_runtime(config.clone()).await
+        .context("failed to initialize agent runtime")?;
+
+    agent_tui::run(config, runtime).await
+}
+
+// ---------------------------------------------------------------------------
+// Headless mode — bridge + scheduler, no TUI (replaces old `aptove run`)
+// ---------------------------------------------------------------------------
+
+async fn run_headless_mode(config: AgentConfig) -> Result<()> {
+    info!(provider = %config.provider, "starting Aptove in headless mode");
+
+    match config.validate() {
+        Ok(warnings) => {
+            for w in &warnings {
+                tracing::warn!("⚠️  {}", w);
+            }
+        }
+        Err(e) => {
+            error!("configuration validation failed: {:#}", e);
+            anyhow::bail!("{}", e);
+        }
+    }
+
+    let mut runtime = build_runtime(config.clone()).await
+        .context("failed to initialize agent runtime")?;
+
+    let mcp_bridge = match setup_mcp_bridge(&config).await {
+        Ok(Some(bridge)) => {
+            let b = bridge.lock().await;
+            let tool_count = b.all_tools().len();
+            runtime.register_tools(b.all_tools());
+            info!(tool_count, "MCP bridge connected, tools registered");
+            drop(b);
+            Some(bridge)
+        }
+        Ok(None) => {
+            info!("no MCP servers configured");
+            None
+        }
+        Err(e) => {
+            error!(err = %e, "failed to set up MCP bridge (continuing without tools)");
+            None
+        }
+    };
+
+    // Start the background scheduler
+    let _scheduler_handle = {
+        let ws_store = runtime.workspace_manager().workspace_store().clone();
+        if let Some(store) = runtime.scheduler_store().cloned() {
+            match runtime.active_provider() {
+                Ok(provider) => {
+                    let scheduler = Scheduler::new(store, ws_store, provider);
+                    let handle = scheduler.start();
+                    info!("background scheduler started");
+                    Some(handle)
+                }
+                Err(e) => {
+                    warn!(err = %e, "could not start scheduler: no active provider");
+                    None
                 }
             }
-        });
+        } else {
+            None
+        }
+    };
+
+    let scheduler_store = runtime.scheduler_store().cloned();
+    let trigger_store = runtime.trigger_store().cloned();
+
+    // Build bridge from AgentConfig transport settings
+    let bridge_config = BridgeServeConfig {
+        bind_addr: config.serve.bind_addr.clone(),
+        advertise_addr: config.serve.advertise_addr.clone(),
+        keep_alive: config.serve.keep_alive,
+    };
+
+    let mut server = BridgeServer::build_with_trigger_store(&config, &bridge_config, trigger_store.clone())
+        .map_err(|e| {
+            eprintln!("❌ Failed to start transport: {}", e);
+            for cause in e.chain().skip(1) {
+                eprintln!("   {}", cause);
+            }
+            std::process::exit(1);
+        })
+        .unwrap();
+
+    let mut transport = server.take_transport();
+    let sender = transport.get_sender();
+
+    let state = Arc::new(AgentState {
+        config: config.clone(),
+        runtime: RwLock::new(runtime),
+        session_manager: SessionManager::new(),
+        session_workspaces: RwLock::new(HashMap::new()),
+        mcp_bridge,
+        sender,
+        scheduler_store,
+        trigger_store,
+    });
+
+    info!("ready — bridge server starting");
+
+    let state_for_loop = state.clone();
+    let agent_loop = async move {
+        run_message_loop(&mut transport, state_for_loop).await;
+        info!("agent transport closed");
+        Ok::<_, anyhow::Error>(())
+    };
+
+    let bridge_serve = server.start();
+
+    tokio::select! {
+        res = agent_loop => { res?; }
+        res = bridge_serve => { res?; }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Show QR command (aptove show-qr)
-// ---------------------------------------------------------------------------
-
-async fn run_show_qr() -> Result<()> {
-    // Bridge config files live in the shared Aptove config directory.
-    // macOS: ~/Library/Application Support/Aptove
-    // Linux: ~/.config/Aptove
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Aptove");
-
-    let mut config = CommonConfig::load_from_dir(&config_dir)?;
-    config.ensure_agent_id();
-    config.ensure_auth_token();
-    config.save_to_dir(&config_dir)?;
-
-    let running = agent_bridge::show_qr(&config_dir, &config)?;
-    if !running {
-        println!("Aptove is not running.");
-        println!();
-        println!("Start it first, then run 'aptove show-qr' to display the connection QR:");
-        println!("  aptove run");
-    }
-
+    state.runtime.read().await.shutdown_plugins().await?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// ACP stdio mode (aptove stdio)
+// ACP stdio mode
 // ---------------------------------------------------------------------------
 
 async fn run_acp_mode(config: AgentConfig) -> Result<()> {
@@ -204,13 +277,11 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
             None
         }
         Err(e) => {
-            // MCP bridge failure is non-fatal — agent works without tools
             error!(err = %e, "failed to set up MCP bridge (continuing without tools)");
             None
         }
     };
 
-    // Start the background scheduler (if scheduler store is configured)
     let _scheduler_handle = {
         let runtime_read = runtime.workspace_manager().workspace_store().clone();
         if let Some(store) = runtime.scheduler_store().cloned() {
@@ -258,111 +329,19 @@ async fn run_acp_mode(config: AgentConfig) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Serve mode — embedded bridge + agent in a single process
+// Shared message dispatch loop
 // ---------------------------------------------------------------------------
 
-async fn run_serve_mode(config: AgentConfig, bridge_config: BridgeServeConfig, show_qr: bool) -> Result<()> {
-    info!(port = bridge_config.port, tls = bridge_config.tls, "starting Aptove in serve mode");
-
-    match config.validate() {
-        Ok(warnings) => {
-            for w in &warnings {
-                tracing::warn!("⚠️  {}", w);
-            }
-        }
-        Err(e) => {
-            error!("configuration validation failed: {:#}", e);
-            anyhow::bail!("{}", e);
-        }
-    }
-
-    let mut runtime = build_runtime(config.clone()).await
-        .context("failed to initialize agent runtime")?;
-
-    let mcp_bridge = match setup_mcp_bridge(&config).await {
-        Ok(Some(bridge)) => {
-            let b = bridge.lock().await;
-            runtime.register_tools(b.all_tools());
-            drop(b);
-            Some(bridge)
-        }
-        Ok(None) => None,
-        Err(e) => {
-            error!(err = %e, "failed to set up MCP bridge (continuing without tools)");
-            None
-        }
-    };
-
-    // Start the background scheduler (if scheduler store is configured)
-    let _scheduler_handle = {
-        let ws_store = runtime.workspace_manager().workspace_store().clone();
-        if let Some(store) = runtime.scheduler_store().cloned() {
-            match runtime.active_provider() {
-                Ok(provider) => {
-                    let scheduler = Scheduler::new(store, ws_store, provider);
-                    let handle = scheduler.start();
-                    info!("background scheduler started");
-                    Some(handle)
-                }
-                Err(e) => {
-                    warn!(err = %e, "could not start scheduler: no active provider");
-                    None
+async fn run_message_loop(transport: &mut dyn Transport, state: Arc<AgentState>) {
+    while let Some(msg) = transport.recv().await {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_message(msg, &state).await {
+                error!(err = %e, "error handling message");
+                for cause in e.chain().skip(1) {
+                    error!("  caused by: {}", cause);
                 }
             }
-        } else {
-            None
-        }
-    };
-
-    let scheduler_store = runtime.scheduler_store().cloned();
-    let trigger_store = runtime.trigger_store().cloned();
-    let mut server = BridgeServer::build_with_trigger_store(&bridge_config, trigger_store.clone())
-        .map_err(|e| {
-            // Print a clean, actionable error instead of the generic fatal banner.
-            eprintln!("❌ Failed to start transport: {}", e);
-            for cause in e.chain().skip(1) {
-                eprintln!("   {}", cause);
-            }
-            std::process::exit(1);
-        })
-        .unwrap();
-
-    if show_qr {
-        // Use the same pairing QR flow as `bridge run --qr` so the iOS app goes
-        // through the pairing handshake and can deduplicate agents by agentId.
-        server.show_qr()?;
+        });
     }
-
-    let mut transport = server.take_transport();
-    let sender = transport.get_sender();
-
-    let state = Arc::new(AgentState {
-        config: config.clone(),
-        runtime: RwLock::new(runtime),
-        session_manager: SessionManager::new(),
-        session_workspaces: RwLock::new(HashMap::new()),
-        mcp_bridge,
-        sender,
-        scheduler_store,
-        trigger_store,
-    });
-
-    info!("ready — bridge server starting");
-
-    let state_for_loop = state.clone();
-    let agent_loop = async move {
-        run_message_loop(&mut transport, state_for_loop).await;
-        info!("agent transport closed");
-        Ok::<_, anyhow::Error>(())
-    };
-
-    let bridge_serve = server.start();
-
-    tokio::select! {
-        res = agent_loop => { res?; }
-        res = bridge_serve => { res?; }
-    }
-
-    state.runtime.read().await.shutdown_plugins().await?;
-    Ok(())
 }

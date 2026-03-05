@@ -1,7 +1,8 @@
 //! Configuration
 //!
 //! TOML-based configuration: provider selection, API keys, model defaults,
-//! MCP server definitions. Includes startup validation.
+//! MCP server definitions, transport settings, identity, and persisted state.
+//! All settings live in a single `config.toml`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,13 +38,192 @@ pub struct AgentConfig {
     #[serde(default)]
     pub system_prompt: SystemPromptConfig,
 
-    /// Bridge / serve mode settings.
+    /// Bridge / serve mode settings (bind_addr, advertise_addr, keep_alive).
     #[serde(default)]
     pub serve: ServeConfig,
+
+    /// Stable agent identity — agent_id and auth_token.
+    /// OWNED by global config.toml; silently stripped from workspace overlays.
+    #[serde(default)]
+    pub identity: IdentityConfig,
+
+    /// Network transport configurations (local, tailscale-serve, tailscale-ip, cloudflare).
+    /// OWNED by global config.toml; silently stripped from workspace overlays.
+    #[serde(default)]
+    pub transports: TransportsConfig,
+
+    /// Persisted TUI state (last active tab, service enabled flags).
+    /// OWNED by global config.toml; silently stripped from workspace overlays.
+    #[serde(default)]
+    pub state: AppStateConfig,
 }
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// Stable agent identity. Owned by global config — never overrideable per workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// UUID v4 agent identifier, generated on first use and persisted.
+    #[serde(default)]
+    pub agent_id: String,
+    /// Bearer token ACP clients must supply to connect. Generated on first use.
+    #[serde(default)]
+    pub auth_token: String,
+}
+
+// ---------------------------------------------------------------------------
+// Transport configurations
+// ---------------------------------------------------------------------------
+
+/// Local network transport — TLS self-signed cert, LAN IP detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransportLocalConfig {
+    /// Whether the local transport is enabled (default true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// WebSocket port (default 8765).
+    #[serde(default = "default_local_port")]
+    pub port: u16,
+    /// Enable TLS with a self-signed certificate (default true).
+    #[serde(default = "default_true")]
+    pub tls: bool,
+}
+
+impl Default for TransportLocalConfig {
+    fn default() -> Self {
+        Self { enabled: true, port: default_local_port(), tls: true }
+    }
+}
+
+/// Tailscale-serve transport — proxied via Tailscale edge with MagicDNS HTTPS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransportTailscaleServeConfig {
+    /// Whether the tailscale-serve transport is enabled (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Local port that Tailscale Serve proxies to (default 8766).
+    #[serde(default = "default_ts_serve_port")]
+    pub port: u16,
+}
+
+impl Default for TransportTailscaleServeConfig {
+    fn default() -> Self {
+        Self { enabled: false, port: default_ts_serve_port() }
+    }
+}
+
+/// Tailscale-IP transport — direct Tailscale IP with TLS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransportTailscaleIpConfig {
+    /// Whether the tailscale-ip transport is enabled (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// WebSocket port (default 8765).
+    #[serde(default = "default_local_port")]
+    pub port: u16,
+}
+
+impl Default for TransportTailscaleIpConfig {
+    fn default() -> Self {
+        Self { enabled: false, port: default_local_port() }
+    }
+}
+
+/// Cloudflare Tunnel transport.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TransportCloudflareConfig {
+    /// Whether the Cloudflare transport is enabled (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Public hostname for the tunnel (e.g. "https://agent.example.com").
+    #[serde(default)]
+    pub hostname: String,
+    /// Cloudflare Tunnel UUID.
+    #[serde(default)]
+    pub tunnel_id: String,
+    /// Cloudflare account ID.
+    #[serde(default)]
+    pub account_id: String,
+    /// Tunnel secret (base64).
+    #[serde(default)]
+    pub tunnel_secret: String,
+}
+
+/// All transport configurations.
+/// Owned by global config.toml; silently stripped from workspace overlays.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TransportsConfig {
+    /// Local network transport (TLS + LAN IP).
+    #[serde(default)]
+    pub local: TransportLocalConfig,
+    /// Tailscale-serve transport (proxied via Tailscale edge).
+    #[serde(rename = "tailscale-serve", default)]
+    pub tailscale_serve: TransportTailscaleServeConfig,
+    /// Tailscale-IP transport (direct Tailscale IP).
+    #[serde(rename = "tailscale-ip", default)]
+    pub tailscale_ip: TransportTailscaleIpConfig,
+    /// Cloudflare Tunnel transport.
+    #[serde(default)]
+    pub cloudflare: TransportCloudflareConfig,
+}
+
+impl TransportsConfig {
+    /// Returns the names of all enabled transports.
+    pub fn enabled_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if self.local.enabled { names.push("local"); }
+        if self.tailscale_serve.enabled { names.push("tailscale-serve"); }
+        if self.tailscale_ip.enabled { names.push("tailscale-ip"); }
+        if self.cloudflare.enabled { names.push("cloudflare"); }
+        names
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Persisted TUI state
+// ---------------------------------------------------------------------------
+
+/// Persisted TUI state — written to config.toml on exit, restored on launch.
+/// Owned by global config.toml; silently stripped from workspace overlays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppStateConfig {
+    /// The tab that was active when Aptove last exited (default "Setup").
+    #[serde(default = "default_last_tab")]
+    pub last_tab: String,
+    /// Whether the Tailscale daemon should start on launch.
+    #[serde(default)]
+    pub tailscale_enabled: bool,
+    /// Whether the Cloudflare tunnel should start on launch.
+    #[serde(default)]
+    pub cloudflare_enabled: bool,
+}
+
+impl Default for AppStateConfig {
+    fn default() -> Self {
+        Self {
+            last_tab: default_last_tab(),
+            tailscale_enabled: false,
+            cloudflare_enabled: false,
+        }
+    }
+}
+
+fn default_last_tab() -> String { "Setup".to_string() }
+fn default_true() -> bool { true }
+fn default_local_port() -> u16 { 8765 }
+fn default_ts_serve_port() -> u16 { 8766 }
 
 fn default_provider() -> String {
     "claude".to_string()
+}
+
+/// Generate a random 32-byte hex auth token.
+fn generate_token() -> String {
+    use rand::Rng as _;
+    let bytes: [u8; 32] = rand::thread_rng().gen();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Per-provider settings.
@@ -260,6 +440,10 @@ impl AgentConfig {
     }
 
     /// Load a global config and optionally merge with a workspace config overlay.
+    ///
+    /// Workspace overlays may only set `provider`, `providers.*`, `mcp_servers`,
+    /// `agent`, `system_prompt`, and `serve`. Keys `identity`, `transports`, and
+    /// `state` are silently stripped from the workspace overlay before merging.
     pub fn load_with_workspace(workspace_config_path: Option<&Path>) -> Result<Self> {
         let base = Self::load_default()?;
         if let Some(ws_path) = workspace_config_path {
@@ -267,7 +451,7 @@ impl AgentConfig {
                 let base_str = toml::to_string(&base)?;
                 let ws_str = std::fs::read_to_string(ws_path)
                     .with_context(|| format!("failed to read workspace config: {}", ws_path.display()))?;
-                return merge_toml_configs(&base_str, &ws_str);
+                return merge_toml_configs_workspace(&base_str, &ws_str);
             }
         }
         Ok(base)
@@ -327,6 +511,43 @@ impl AgentConfig {
         })
     }
 
+    /// Ensure `identity.agent_id` and `identity.auth_token` are populated.
+    ///
+    /// Generates and saves them if either is empty. Call this once at startup
+    /// before building the bridge server.
+    pub fn ensure_identity(&mut self) {
+        let mut changed = false;
+        if self.identity.agent_id.is_empty() {
+            self.identity.agent_id = uuid::Uuid::new_v4().to_string();
+            changed = true;
+        }
+        if self.identity.auth_token.is_empty() {
+            self.identity.auth_token = generate_token();
+            changed = true;
+        }
+        if changed {
+            if let Err(e) = self.save() {
+                tracing::warn!("failed to persist generated identity: {}", e);
+            }
+        }
+    }
+
+    /// Atomically write the full config (including current state) to the default path.
+    ///
+    /// Uses a `.config.toml.tmp` temp file + rename to prevent corruption on crash.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::default_path()?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let tmp = path.with_extension("toml.tmp");
+        let content = toml::to_string_pretty(self)
+            .context("failed to serialize config")?;
+        std::fs::write(&tmp, content)
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("failed to rename {} → {}", tmp.display(), path.display()))?;
+        Ok(())
+    }
+
     /// Validate the config on startup. Returns a list of warnings.
     pub fn validate(&self) -> Result<Vec<String>> {
         let mut warnings = Vec::new();
@@ -379,6 +600,9 @@ impl Default for AgentConfig {
             agent: AgentSettings::default(),
             system_prompt: SystemPromptConfig::default(),
             serve: ServeConfig::default(),
+            identity: IdentityConfig::default(),
+            transports: TransportsConfig::default(),
+            state: AppStateConfig::default(),
         }
     }
 }
@@ -390,7 +614,6 @@ impl Default for AgentConfig {
 /// Generate a sample config TOML string.
 pub fn sample_config() -> String {
     r#"# Aptove Agent Configuration
-# See: https://github.com/agentclientprotocol/rust-sdk
 
 # Active LLM provider: "claude", "gemini", or "openai"
 provider = "claude"
@@ -439,19 +662,54 @@ backoff_multiplier = 2.0
 # planning = "You are in planning mode. Think step by step."
 # reviewing = "You are reviewing code. Focus on bugs and improvements."
 
-# Bridge / serve mode settings (used by `aptove run`)
-# These can be overridden per-workspace in:
-#   <data_dir>/workspaces/<uuid>/config.toml
-# CLI flags (--port, --tls, --bind) take precedence over these values.
-# Transport selection is configured in common.toml (see `aptove show-qr`).
-#
+# Serve / bridge settings — can be overridden per-workspace in
+# <data_dir>/workspaces/<uuid>/config.toml
 # [serve]
-# port = 8765
 # bind_addr = "0.0.0.0"
-# tls = true
-# auth_token = "secret"  # optional bearer token for WebSocket connections
 # keep_alive = false
-# advertise_addr = "192.168.1.50"  # override auto-detected LAN IP (useful in containers with -p port forwarding)
+# advertise_addr = "192.168.1.50"  # override auto-detected LAN IP (containers with -p)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identity — generated automatically on first launch. Do not share auth_token.
+# OWNED by this file; workspace configs cannot override these.
+# ─────────────────────────────────────────────────────────────────────────────
+[identity]
+# agent_id = "uuid-v4"      # Auto-generated; identifies this agent instance
+# auth_token = "hex-token"  # Auto-generated; clients must supply this to connect
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Network transports — configure which connection methods are active.
+# OWNED by this file; workspace configs cannot override these.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[transports.local]
+enabled = true
+port = 8765
+tls = true
+
+# [transports.tailscale-serve]
+# enabled = false
+# port = 8766
+
+# [transports.tailscale-ip]
+# enabled = false
+# port = 8765
+
+# [transports.cloudflare]
+# enabled = false
+# hostname = ""       # e.g. "https://agent.example.com"
+# tunnel_id = ""
+# account_id = ""
+# tunnel_secret = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Persisted TUI state — written automatically on exit. Do not edit by hand.
+# OWNED by this file; workspace configs cannot override these.
+# ─────────────────────────────────────────────────────────────────────────────
+[state]
+last_tab = "Setup"
+tailscale_enabled = false
+cloudflare_enabled = false
 "#
     .to_string()
 }
@@ -460,15 +718,41 @@ backoff_multiplier = 2.0
 // Config merging
 // ---------------------------------------------------------------------------
 
+/// Keys that are owned by the global config and cannot be set in workspace overlays.
+const WORKSPACE_BLOCKED_KEYS: &[&str] = &["identity", "transports", "state"];
+
 /// Merge a base TOML config with a workspace overlay.
 ///
-/// Workspace config fields override base config fields. Nested tables
-/// are merged recursively.
+/// All fields in the overlay override base config fields. Use this for
+/// non-workspace merges (e.g. unit tests, programmatic merges).
 pub fn merge_toml_configs(base_toml: &str, overlay_toml: &str) -> Result<AgentConfig> {
     let mut base_val: toml::Value = toml::from_str(base_toml)
         .context("failed to parse base config TOML")?;
     let overlay_val: toml::Value = toml::from_str(overlay_toml)
         .context("failed to parse overlay config TOML")?;
+    merge_toml_values(&mut base_val, &overlay_val);
+    let config: AgentConfig = base_val.try_into()
+        .context("merged config is not a valid AgentConfig")?;
+    Ok(config)
+}
+
+/// Merge a base TOML config with a workspace overlay, stripping owned keys.
+///
+/// `identity`, `transports`, and `state` are silently removed from the overlay
+/// before merging so workspace configs cannot override them.
+fn merge_toml_configs_workspace(base_toml: &str, overlay_toml: &str) -> Result<AgentConfig> {
+    let mut base_val: toml::Value = toml::from_str(base_toml)
+        .context("failed to parse base config TOML")?;
+    let mut overlay_val: toml::Value = toml::from_str(overlay_toml)
+        .context("failed to parse overlay config TOML")?;
+
+    // Strip owned keys from the workspace overlay
+    if let Some(table) = overlay_val.as_table_mut() {
+        for key in WORKSPACE_BLOCKED_KEYS {
+            table.remove(*key);
+        }
+    }
+
     merge_toml_values(&mut base_val, &overlay_val);
     let config: AgentConfig = base_val.try_into()
         .context("merged config is not a valid AgentConfig")?;
@@ -630,5 +914,139 @@ mod tests {
         assert!(dir.is_ok());
         let path = dir.unwrap();
         assert!(path.to_string_lossy().contains("Aptove"));
+    }
+
+    #[test]
+    fn parse_identity_and_transports() {
+        let toml_str = r#"
+            provider = "claude"
+
+            [identity]
+            agent_id = "test-uuid"
+            auth_token = "tok_secret"
+
+            [transports.local]
+            enabled = true
+            port = 8765
+            tls = true
+
+            [transports.cloudflare]
+            enabled = false
+            hostname = "https://agent.example.com"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.identity.agent_id, "test-uuid");
+        assert_eq!(config.identity.auth_token, "tok_secret");
+        assert!(config.transports.local.enabled);
+        assert_eq!(config.transports.local.port, 8765);
+        assert!(!config.transports.cloudflare.enabled);
+        assert_eq!(config.transports.cloudflare.hostname, "https://agent.example.com");
+    }
+
+    #[test]
+    fn parse_state_section() {
+        let toml_str = r#"
+            provider = "claude"
+
+            [state]
+            last_tab = "Chat"
+            tailscale_enabled = true
+            cloudflare_enabled = false
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.state.last_tab, "Chat");
+        assert!(config.state.tailscale_enabled);
+        assert!(!config.state.cloudflare_enabled);
+    }
+
+    #[test]
+    fn default_transports_local_enabled() {
+        let config = AgentConfig::default();
+        assert!(config.transports.local.enabled);
+        assert_eq!(config.transports.local.port, 8765);
+        assert!(!config.transports.tailscale_serve.enabled);
+        assert!(!config.transports.tailscale_ip.enabled);
+        assert!(!config.transports.cloudflare.enabled);
+    }
+
+    #[test]
+    fn enabled_transport_names() {
+        let mut config = AgentConfig::default();
+        config.transports.local.enabled = true;
+        config.transports.tailscale_serve.enabled = true;
+        config.transports.cloudflare.enabled = false;
+        let names = config.transports.enabled_names();
+        assert_eq!(names, vec!["local", "tailscale-serve"]);
+    }
+
+    #[test]
+    fn workspace_cannot_override_identity() {
+        let base = r#"
+            provider = "claude"
+            [identity]
+            agent_id = "original-id"
+            auth_token = "original-token"
+        "#;
+        let overlay = r#"
+            [identity]
+            agent_id = "hacked-id"
+            auth_token = "hacked-token"
+        "#;
+        let merged = merge_toml_configs_workspace(base, overlay).unwrap();
+        assert_eq!(merged.identity.agent_id, "original-id");
+        assert_eq!(merged.identity.auth_token, "original-token");
+    }
+
+    #[test]
+    fn workspace_cannot_override_transports() {
+        let base = r#"
+            provider = "claude"
+            [transports.local]
+            enabled = true
+            port = 8765
+        "#;
+        let overlay = r#"
+            [transports.local]
+            enabled = false
+            port = 9999
+        "#;
+        let merged = merge_toml_configs_workspace(base, overlay).unwrap();
+        assert!(merged.transports.local.enabled);
+        assert_eq!(merged.transports.local.port, 8765);
+    }
+
+    #[test]
+    fn workspace_cannot_override_state() {
+        let base = r#"
+            provider = "claude"
+            [state]
+            last_tab = "Jobs"
+            tailscale_enabled = true
+        "#;
+        let overlay = r#"
+            [state]
+            last_tab = "Setup"
+            tailscale_enabled = false
+        "#;
+        let merged = merge_toml_configs_workspace(base, overlay).unwrap();
+        assert_eq!(merged.state.last_tab, "Jobs");
+        assert!(merged.state.tailscale_enabled);
+    }
+
+    #[test]
+    fn workspace_can_override_provider() {
+        let base = r#"provider = "claude""#;
+        let overlay = r#"provider = "gemini""#;
+        let merged = merge_toml_configs_workspace(base, overlay).unwrap();
+        assert_eq!(merged.provider, "gemini");
+    }
+
+    #[test]
+    fn sample_config_parses_with_new_sections() {
+        let sample = sample_config();
+        let config: AgentConfig = toml::from_str(&sample).unwrap();
+        // New sections should parse without error
+        assert!(config.transports.local.enabled);
+        assert_eq!(config.state.last_tab, "Setup");
     }
 }

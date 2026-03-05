@@ -1,4 +1,3 @@
-pub mod chat;
 pub mod config;
 pub mod jobs;
 pub mod triggers;
@@ -8,7 +7,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "aptove", version = env!("CARGO_PKG_VERSION"), about = "Aptove — ACP AI Coding Agent")]
+#[command(
+    name = "aptove",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Aptove — ACP AI Coding Agent\n\nRun without arguments to launch the full-screen TUI.",
+)]
 pub struct Cli {
     /// Path to config file
     #[arg(long, global = true)]
@@ -18,9 +21,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub workspace: Option<String>,
 
-    /// Start in ACP stdio mode (alias for the `stdio` subcommand; for use with bridge)
+    /// Start in ACP stdio mode (for use with an external bridge)
     #[arg(long, global = true, hide = true)]
     pub stdio: bool,
+
+    /// Start the ACP bridge and scheduler without the TUI (for server/container use)
+    #[arg(long, global = true)]
+    pub headless: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -28,37 +35,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run the ACP agent and WebSocket bridge in a single process (default)
-    Run {
-        /// Port to listen on (overrides config.toml [serve] port)
-        #[arg(long)]
-        port: Option<u16>,
-        /// Enable TLS (overrides config.toml [serve] tls)
-        #[arg(long)]
-        tls: Option<bool>,
-        /// Bind address (overrides config.toml [serve] bind_addr)
-        #[arg(long)]
-        bind: Option<String>,
-        /// Override the advertised LAN address in the QR code pairing URL.
-        /// Useful when running in Docker or Apple Native containers with -p port
-        /// forwarding, where the auto-detected IP is an internal virtual address.
-        /// Example: --advertise-addr 192.168.1.50
-        #[arg(long)]
-        advertise_addr: Option<String>,
-        /// Print connection QR code(s) at startup so you can scan with the Aptove mobile app
-        #[arg(short = 'Q', long)]
-        qr: bool,
-    },
-    /// Show connection QR code for a second device to connect to the running agent
-    ///
-    /// Displays the QR code for the currently active transport. Aptove must
-    /// already be running (via `aptove run`). Use this when you need to pair an
-    /// additional device without restarting.
-    ShowQr,
     /// Start in ACP stdio mode (for use with an external bridge)
     Stdio,
-    /// Interactive REPL chat mode
-    Chat,
     /// Workspace management
     Workspace {
         #[command(subcommand)]
