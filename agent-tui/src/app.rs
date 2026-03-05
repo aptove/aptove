@@ -13,6 +13,8 @@ use tokio::sync::{mpsc, watch, RwLock};
 
 use agent_core::builder::AgentRuntime;
 use agent_core::config::AgentConfig;
+use agent_core::provider::{LlmProvider, StreamCallback, StreamEvent};
+use agent_core::types::{Message, MessageContent, Role};
 
 use crate::services::bridge::BridgeService;
 use crate::services::tailscale::{TailscaleService, TailscaleStatus};
@@ -47,6 +49,8 @@ pub struct AppState {
     pub connected_clients: Vec<(String, String, String)>,
     /// The global AgentConfig.
     pub config: AgentConfig,
+    /// Active LLM provider for the Chat tab.
+    pub provider: Option<Arc<dyn LlmProvider>>,
 }
 
 impl AppState {
@@ -64,6 +68,7 @@ impl AppState {
             active_transports: Vec::new(),
             connected_clients: Vec::new(),
             config,
+            provider: None,
         }
     }
 
@@ -104,7 +109,7 @@ pub enum AppCommand {
 // ---------------------------------------------------------------------------
 
 /// Run the full-screen TUI.
-pub async fn run_app(config: AgentConfig, _runtime: AgentRuntime) -> Result<()> {
+pub async fn run_app(config: AgentConfig, runtime: AgentRuntime) -> Result<()> {
     // Set up terminal
     terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -118,7 +123,7 @@ pub async fn run_app(config: AgentConfig, _runtime: AgentRuntime) -> Result<()> 
         original_hook(info);
     }));
 
-    let result = run_app_inner(config).await;
+    let result = run_app_inner(config, runtime).await;
 
     // Restore terminal
     terminal::disable_raw_mode()?;
@@ -127,11 +132,14 @@ pub async fn run_app(config: AgentConfig, _runtime: AgentRuntime) -> Result<()> 
     result
 }
 
-async fn run_app_inner(config: AgentConfig) -> Result<()> {
+async fn run_app_inner(config: AgentConfig, runtime: AgentRuntime) -> Result<()> {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let state = Arc::new(RwLock::new(AppState::new(config.clone())));
+    let mut app_state = AppState::new(config.clone());
+    // Wire up the LLM provider for the chat tab
+    app_state.provider = runtime.active_provider().ok();
+    let state = Arc::new(RwLock::new(app_state));
 
     // Command channel: UI → services
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AppCommand>(32);
@@ -345,11 +353,90 @@ async fn handle_commands(
                 }
             }
             AppCommand::SendChatMessage(msg) => {
-                let mut st = state.write().await;
-                st.chat_messages.push(("user".to_string(), msg));
-                st.chat_input.clear();
-                st.chat_streaming = true;
-                // TODO: spawn LLM request task in Phase 3
+                // Grab the provider and build the message history under one lock
+                let (provider, history, msg_idx) = {
+                    let mut st = state.write().await;
+
+                    let provider = match st.provider.clone() {
+                        Some(p) => p,
+                        None => {
+                            st.chat_messages.push(("assistant".to_string(),
+                                "⚠️ No LLM provider configured. Check your config.toml.".to_string()));
+                            continue;
+                        }
+                    };
+
+                    // Add user message and reserve an assistant slot
+                    st.chat_messages.push(("user".to_string(), msg));
+                    st.chat_input.clear();
+                    st.chat_streaming = true;
+                    st.chat_messages.push(("assistant".to_string(), String::new()));
+                    let msg_idx = st.chat_messages.len() - 1;
+
+                    // Build history (all messages except the empty assistant slot)
+                    let history: Vec<Message> = st.chat_messages[..msg_idx]
+                        .iter()
+                        .filter_map(|(role, content)| {
+                            let r = match role.as_str() {
+                                "user"      => Role::User,
+                                "assistant" => Role::Assistant,
+                                _           => return None,
+                            };
+                            Some(Message { role: r, content: MessageContent::Text(content.clone()) })
+                        })
+                        .collect();
+
+                    (provider, history, msg_idx)
+                };
+
+                // Streaming channel: LLM callback → async receiver
+                let (chunk_tx, mut chunk_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<String>();
+                let cb_tx = chunk_tx.clone();
+                let cb: StreamCallback = Arc::new(move |event| {
+                    if let StreamEvent::TextDelta(chunk) = event {
+                        let _ = cb_tx.send(chunk);
+                    }
+                });
+
+                // Receive streaming chunks and append to the assistant message
+                let recv_state = state.clone();
+                tokio::spawn(async move {
+                    while let Some(chunk) = chunk_rx.recv().await {
+                        let mut st = recv_state.write().await;
+                        if let Some((_, content)) = st.chat_messages.get_mut(msg_idx) {
+                            content.push_str(&chunk);
+                        }
+                    }
+                });
+
+                // Run the LLM call in a background task
+                let llm_state = state.clone();
+                tokio::spawn(async move {
+                    match provider.complete(&history, &[], Some(cb)).await {
+                        Ok(response) => {
+                            drop(chunk_tx); // close channel → chunk receiver exits
+                            let mut st = llm_state.write().await;
+                            // Fall back to full response if streaming produced nothing
+                            if let Some((_, content)) = st.chat_messages.get_mut(msg_idx) {
+                                if content.is_empty() {
+                                    *content = response.content;
+                                }
+                            }
+                            st.chat_streaming = false;
+                            // Auto-scroll to bottom
+                            st.chat_scroll = st.chat_messages.len().saturating_sub(1);
+                        }
+                        Err(e) => {
+                            drop(chunk_tx);
+                            let mut st = llm_state.write().await;
+                            if let Some((_, content)) = st.chat_messages.get_mut(msg_idx) {
+                                *content = format!("⚠️ Error: {}", e);
+                            }
+                            st.chat_streaming = false;
+                        }
+                    }
+                });
             }
             AppCommand::CancelChat => {
                 let mut st = state.write().await;
