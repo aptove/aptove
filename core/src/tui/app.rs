@@ -15,7 +15,7 @@ use ratatui::{
 };
 use std::io;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::common_config::{CommonConfig, PushRelayConfig, TransportConfig};
 use crate::transport;
@@ -145,7 +145,7 @@ impl App {
 
         let keepalive = if config.keep_alive {
             keepawake::Builder::default()
-                .display(false)
+                .display(true)
                 .idle(true)
                 .sleep(true)
                 .create()
@@ -226,6 +226,16 @@ impl App {
             );
         }
 
+        // Warn if keep-alive is enabled in config but the OS guard couldn't be created.
+        if self.config.keep_alive && self.keepalive.is_none() {
+            self.log_push_warn(
+                "Keep-alive guard creation failed — system may still sleep. \
+                 On Linux, systemd-inhibit or a D-Bus session is required. \
+                 On Windows, check Group Policy power settings."
+                .to_string(),
+            );
+        }
+
         // Main event loop.
         loop {
             if let Ok(size) = terminal.size() {
@@ -255,7 +265,7 @@ impl App {
                             transport_addr: self.transport_addr.clone(),
                             transport_up: self.transport_up,
                             push_up: self.push_up,
-                            keep_alive: self.config.keep_alive,
+                            keep_alive: self.keepalive.is_some(),
                             copy_hint: if self.copy_hint_ticks > 0 { Some(self.copy_hint_msg.as_str()) } else { None },
                         };
                         // Build autocomplete entries for the renderer (no allocation if empty).
@@ -1242,12 +1252,21 @@ impl App {
         self.config.keep_alive = !self.config.keep_alive;
         if self.config.keep_alive {
             self.keepalive = keepawake::Builder::default()
-                .display(false)
+                .display(true)
                 .idle(true)
                 .sleep(true)
                 .create()
                 .ok();
-            self.log_push("Keep-alive enabled — system sleep prevented.".to_string());
+            if self.keepalive.is_some() {
+                self.log_push("Keep-alive enabled — system sleep prevented.".to_string());
+            } else {
+                self.log_push_warn(
+                    "Keep-alive enabled but guard creation failed — system may still sleep. \
+                     On Linux, systemd-inhibit or a D-Bus session is required. \
+                     On Windows, check Group Policy power settings."
+                    .to_string(),
+                );
+            }
         } else {
             self.keepalive = None;
             self.log_push("Keep-alive disabled — system may sleep normally.".to_string());
@@ -1291,7 +1310,7 @@ impl App {
                 }
             }
             BridgeEvent::PairingUrlReady { url, transport } => {
-                info!("Pairing URL ready for transport: {}", transport);
+                debug!("Pairing URL ready for transport: {}", transport);
                 self.pairing_url = Some(url.clone());
                 self.pairing_received_at = Some(std::time::Instant::now());
                 // Pre-render QR string.
