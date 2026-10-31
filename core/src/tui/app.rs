@@ -557,7 +557,7 @@ impl App {
                         return;
                     }
 
-                    self.config.push_relay = Some(PushRelayConfig {
+                    self.config.custom_push_relay = Some(PushRelayConfig {
                         url: push_url,
                         token_url,
                         client_id,
@@ -1208,22 +1208,20 @@ impl App {
                         self.close_popup();
                     }
                     1 => {
-                        // Aptove
-                        let (cid, csec) = match &self.config.push_relay {
-                            Some(pr) if pr.url.contains("aptove.com") => (pr.client_id.clone(), pr.client_secret.clone()),
-                            _ => (String::new(), String::new()),
+                        // Aptove — pre-populate from aptove_push_relay if present
+                        let (cid, csec) = match &self.config.aptove_push_relay {
+                            Some(pr) => (pr.client_id.clone(), pr.client_secret.clone()),
+                            None => (String::new(), String::new()),
                         };
                         self.popup = Some(PopupKind::PushConfig {
                             step: PushPopupStep::AptoveForm { fields: [cid, csec], field_idx: 0, error: None },
                         });
                     }
                     _ => {
-                        // Self Managed
-                        let (pu, tu, cid, csec) = match &self.config.push_relay {
-                            Some(pr) if !pr.url.contains("aptove.com") => {
-                                (pr.url.clone(), pr.token_url.clone(), pr.client_id.clone(), pr.client_secret.clone())
-                            }
-                            _ => (String::new(), String::new(), String::new(), String::new()),
+                        // Self Managed — pre-populate from custom_push_relay if present
+                        let (pu, tu, cid, csec) = match &self.config.custom_push_relay {
+                            Some(pr) => (pr.url.clone(), pr.token_url.clone(), pr.client_id.clone(), pr.client_secret.clone()),
+                            None => (String::new(), String::new(), String::new(), String::new()),
                         };
                         self.popup = Some(PopupKind::PushConfig {
                             step: PushPopupStep::SelfManagedForm { fields: [pu, tu, cid, csec], field_idx: 0, error: None },
@@ -1273,7 +1271,7 @@ impl App {
                                 },
                             });
                         } else {
-                            self.config.push_relay = Some(PushRelayConfig {
+                            self.config.aptove_push_relay = Some(PushRelayConfig {
                                 url: "https://push.aptove.com".to_string(),
                                 token_url: "https://token.aptove.com".to_string(),
                                 client_id,
@@ -1337,7 +1335,7 @@ impl App {
                                 },
                             });
                         } else {
-                            self.config.push_relay = Some(PushRelayConfig {
+                            self.config.custom_push_relay = Some(PushRelayConfig {
                                 url: push_url,
                                 token_url,
                                 client_id,

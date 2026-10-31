@@ -106,8 +106,19 @@ pub struct CommonConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slash_commands: Vec<SlashCommandConfig>,
 
-    /// Push relay configuration. Credentials are stored here regardless of
-    /// `push_selection` so the user can re-enable push without re-entering them.
+    /// Aptove hosted push service credentials.
+    /// Stored independently from `custom_push_relay` so configuring one
+    /// provider never overwrites the other's credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aptove_push_relay: Option<PushRelayConfig>,
+
+    /// Self-managed / custom push service credentials.
+    /// Stored independently from `aptove_push_relay`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_push_relay: Option<PushRelayConfig>,
+
+    /// Legacy single push relay field — present only in configs written before
+    /// the aptove/custom split. Migrated automatically on first load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_relay: Option<PushRelayConfig>,
 
@@ -202,6 +213,8 @@ impl Default for CommonConfig {
             auth_token: String::new(),
             transports: HashMap::new(),
             slash_commands: Vec::new(),
+            aptove_push_relay: None,
+            custom_push_relay: None,
             push_relay: None,
             push_selection: None,
             agent_command: None,
@@ -250,9 +263,26 @@ impl CommonConfig {
         }
         let text = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {:?}", path))?;
-        let config: Self = toml::from_str(&text)
+        let mut config: Self = toml::from_str(&text)
             .with_context(|| format!("Failed to parse {:?}", path))?;
+        config.migrate_push_relay();
         Ok(config)
+    }
+
+    /// Migrate legacy `push_relay` field to `aptove_push_relay` / `custom_push_relay`.
+    /// After migration `push_relay` is set to `None` so the next save drops it.
+    fn migrate_push_relay(&mut self) {
+        if let Some(old) = self.push_relay.take() {
+            if old.url.contains("aptove.com") {
+                if self.aptove_push_relay.is_none() {
+                    self.aptove_push_relay = Some(old);
+                }
+            } else {
+                if self.custom_push_relay.is_none() {
+                    self.custom_push_relay = Some(old);
+                }
+            }
+        }
     }
 
     /// Save to `common.toml` with 0600 permissions (default config dir).
@@ -276,14 +306,14 @@ impl CommonConfig {
         Ok(())
     }
 
-    /// Returns the push relay config only when push is actually active.
+    /// Returns the active push relay config based on `push_selection`.
     ///
-    /// Returns `None` when `push_selection` is `None` (never configured),
-    /// `Some(PushSelection::None)` (explicitly disabled), or when `push_relay`
-    /// credentials are absent.
+    /// Returns `None` when push is disabled, not yet configured, or the
+    /// corresponding credentials section is absent.
     pub fn effective_push_relay(&self) -> Option<&PushRelayConfig> {
         match &self.push_selection {
-            Some(PushSelection::Aptove) | Some(PushSelection::Custom) => self.push_relay.as_ref(),
+            Some(PushSelection::Aptove) => self.aptove_push_relay.as_ref(),
+            Some(PushSelection::Custom) => self.custom_push_relay.as_ref(),
             _ => None,
         }
     }
