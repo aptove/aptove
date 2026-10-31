@@ -15,7 +15,7 @@ use ratatui::{
 };
 use std::io;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::common_config::{CommonConfig, PushRelayConfig, TransportConfig};
 use crate::transport;
