@@ -263,6 +263,10 @@ pub async fn run_bridge(
                         url: pm_renew.get_pairing_url(&base_url_renew),
                         transport: transport_renew.clone(),
                     })).await;
+                } else if is_visible {
+                    // Send a Tick every second while the QR popup is open so the
+                    // countdown timer redraws and visibly counts down.
+                    let _ = tx_renew.send(AppEvent::Tick).await;
                 }
             }
         });

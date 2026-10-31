@@ -271,7 +271,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
 
         WizardStep::TransportPick { selected, statuses, .. } => {
             let title = if state.reconnect_mode {
-                "Choose Transport to Reconnect"
+                "Change Transport"
             } else {
                 "Choose Transport for This Session"
             };
@@ -280,7 +280,12 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
             } else {
                 "\u{2191}/\u{2193} navigate   Enter select   unconfigured \u{2192} inline setup   Esc back"
             };
-            let inner = wizard_panel(frame, title, pick_hint, setup_note);
+            let transport_note = if state.reconnect_mode {
+                Some("After switching, scan the new QR code on your mobile app to reconnect.")
+            } else {
+                setup_note
+            };
+            let inner = wizard_panel(frame, title, pick_hint, transport_note);
             let plugins = transport::all();
             let items: Vec<ListItem> = plugins.iter().enumerate().map(|(i, plugin)| {
                 let prefix = if i == *selected { "> " } else { "  " };

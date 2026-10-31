@@ -36,6 +36,8 @@ pub enum PopupKind {
     LogLevel { selected: usize },
     /// Push notifications configuration (multi-step).
     PushConfig { step: PushPopupStep },
+    /// Transport failed — shown instead of QR when the bridge is not running.
+    TransportError,
 }
 
 
@@ -55,6 +57,9 @@ pub fn render_popup(
         }
         PopupKind::PushConfig { step } => {
             render_push_popup(frame, step);
+        }
+        PopupKind::TransportError => {
+            render_transport_error_popup(frame);
         }
     }
 }
@@ -267,6 +272,38 @@ pub fn url_at(kind: &PopupKind, col: u16, row: u16, term: Rect) -> Option<&'stat
         }
     }
     None
+}
+
+// ── Transport error ───────────────────────────────────────────────────────────
+
+fn render_transport_error_popup(frame: &mut Frame) {
+    use ratatui::widgets::Wrap;
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" QR Code Unavailable ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Paragraph::new(
+            "The transport is not running.\n\n\
+             Fix the error shown in the logs,\n\
+             then use /qr once the bridge is up."
+        )
+        .style(Style::default().fg(Color::Yellow))
+        .wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 2, y: inner.y + 2, width: inner.width.saturating_sub(4), height: inner.height.saturating_sub(3) },
+    );
+
+    frame.render_widget(
+        Paragraph::new("Esc to close")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
+    );
 }
 
 // ── Log level picker ──────────────────────────────────────────────────────────

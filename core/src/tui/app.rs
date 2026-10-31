@@ -133,6 +133,10 @@ pub struct App {
     // Shared with the pairing renewal task — true while the QR popup is open.
     // The task only renews codes when this is true.
     qr_visible: Arc<AtomicBool>,
+
+    // Set when the bridge exits with an error; cleared when a new bridge starts.
+    // Used to show an error popup instead of the QR code when the transport is down.
+    bridge_error: Option<String>,
 }
 
 impl App {
@@ -201,6 +205,7 @@ impl App {
             show_qr_on_ready: false,
             pairing_received_at: None,
             qr_visible: Arc::new(AtomicBool::new(false)),
+            bridge_error: None,
         }
     }
 
@@ -728,6 +733,7 @@ impl App {
         self.bridge_shutdown = Some(shutdown_tx);
         self.transport_name = transport.clone();
         self.transport_up = false;
+        self.bridge_error = None;
         let qr_visible = Arc::clone(&self.qr_visible);
 
         tokio::spawn(async move {
@@ -998,8 +1004,16 @@ impl App {
     async fn handle_command(&mut self, cmd: &str) {
         match cmd {
             "/qr" => {
-                self.qr_visible.store(true, Ordering::Relaxed);
-                self.popup = Some(PopupKind::QrCode);
+                if !self.transport_up {
+                    // Transport is down — show an error instead of a stale/empty QR.
+                    self.popup = Some(PopupKind::TransportError);
+                } else {
+                    // Clear the stale timestamp so the popup shows no countdown
+                    // until the fresh code arrives (avoids a brief "renewing…" flash).
+                    self.pairing_received_at = None;
+                    self.qr_visible.store(true, Ordering::Relaxed);
+                    self.popup = Some(PopupKind::QrCode);
+                }
             }
             "/quit" | "/exit" => {
                 self.quit = true;
@@ -1357,6 +1371,11 @@ impl App {
                 self.log_push("Push token registered.".to_string());
             }
             BridgeEvent::BridgeStopped => {
+                // Clear the sender unconditionally. If the bridge died on its
+                // own (e.g. transport error), this prevents finish_wizard() from
+                // seeing a stale sender and waiting for a BridgeStopped that
+                // will never arrive.
+                self.bridge_shutdown = None;
                 self.transport_up = false;
                 self.log_push("Bridge stopped.".to_string());
                 // If finish_wizard() asked us to restart after the old bridge
@@ -1376,6 +1395,15 @@ impl App {
                 });
                 if self.auto_scroll {
                     self.log_scroll = 0;
+                }
+                self.bridge_error = Some(message);
+                // Don't auto-open QR for a failed transport.
+                self.show_qr_on_ready = false;
+                // If QR popup is open, replace it with the transport error notice.
+                if self.popup == Some(PopupKind::QrCode) {
+                    self.qr_visible.store(false, Ordering::Relaxed);
+                    self.popup = Some(PopupKind::TransportError);
+                    self.needs_clear = true;
                 }
             }
         }
