@@ -1101,7 +1101,7 @@ impl App {
     }
 
     fn fire_test_push(&mut self) {
-        let push_cfg = match &self.config.push_relay {
+        let push_cfg = match self.config.effective_push_relay() {
             Some(p) if !p.url.is_empty() && !p.client_id.is_empty() => p.clone(),
             _ => return,
         };

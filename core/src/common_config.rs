@@ -117,11 +117,6 @@ pub struct CommonConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_push_relay: Option<PushRelayConfig>,
 
-    /// Legacy single push relay field — present only in configs written before
-    /// the aptove/custom split. Migrated automatically on first load.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub push_relay: Option<PushRelayConfig>,
-
     /// Which push provider the user has explicitly selected.
     /// `None` means no choice has been made yet (triggers the first-run push menu).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,7 +210,6 @@ impl Default for CommonConfig {
             slash_commands: Vec::new(),
             aptove_push_relay: None,
             custom_push_relay: None,
-            push_relay: None,
             push_selection: None,
             agent_command: None,
             bind_address: None,
@@ -263,26 +257,9 @@ impl CommonConfig {
         }
         let text = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {:?}", path))?;
-        let mut config: Self = toml::from_str(&text)
+        let config: Self = toml::from_str(&text)
             .with_context(|| format!("Failed to parse {:?}", path))?;
-        config.migrate_push_relay();
         Ok(config)
-    }
-
-    /// Migrate legacy `push_relay` field to `aptove_push_relay` / `custom_push_relay`.
-    /// After migration `push_relay` is set to `None` so the next save drops it.
-    fn migrate_push_relay(&mut self) {
-        if let Some(old) = self.push_relay.take() {
-            if old.url.contains("aptove.com") {
-                if self.aptove_push_relay.is_none() {
-                    self.aptove_push_relay = Some(old);
-                }
-            } else {
-                if self.custom_push_relay.is_none() {
-                    self.custom_push_relay = Some(old);
-                }
-            }
-        }
     }
 
     /// Save to `common.toml` with 0600 permissions (default config dir).
