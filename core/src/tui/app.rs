@@ -735,6 +735,11 @@ impl App {
                 let _ = event_tx.send(AppEvent::Bridge(BridgeEvent::BridgeError {
                     message: e.to_string(),
                 })).await;
+                // run_bridge only sends BridgeStopped after its main loop. Early
+                // errors (e.g. transport misconfiguration) exit via `?` before
+                // reaching that point, so we send it here to unblock any pending
+                // restart that finish_wizard() queued.
+                let _ = event_tx.send(AppEvent::Bridge(BridgeEvent::BridgeStopped)).await;
             }
         });
     }
