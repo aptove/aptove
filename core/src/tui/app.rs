@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU8, Ordering}};
 
 use anyhow::Result;
 use crossterm::{
@@ -38,13 +38,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// All slash commands with their one-line descriptions.
 const COMMANDS: &[(&str, &str)] = &[
-    ("/qr",          "Show QR pairing code"),
-    ("/test-push",   "Send a test push notification"),
-    ("/push",        "Configure push notifications"),
+    ("/qr",          "Show QR pairing code for the mobile app"),
     ("/reconnect",   "Restart the transport"),
-    ("/keep-alive",  "Toggle prevent-sleep (on by default)"),
-    ("/log-level",   "Change log verbosity (default: WARN)"),
     ("/agent",       "Change the AI agent"),
+    ("/push",        "Configure push notifications"),
+    ("/test-push",   "Send a test push notification"),
+    ("/keep-alive",  "Toggle to prevent computer to sleep"),
+    ("/log-level",   "Change log verbosity (default: WARN)"),
     ("/quit",        "Exit the bridge"),
 ];
 
@@ -129,6 +129,10 @@ pub struct App {
     // When the current pairing code was issued — used to show the countdown
     // in the QR popup and detect when auto-renew has fired.
     pairing_received_at: Option<std::time::Instant>,
+
+    // Shared with the pairing renewal task — true while the QR popup is open.
+    // The task only renews codes when this is true.
+    qr_visible: Arc<AtomicBool>,
 }
 
 impl App {
@@ -196,6 +200,7 @@ impl App {
             restart_pending: false,
             show_qr_on_ready: false,
             pairing_received_at: None,
+            qr_visible: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -642,6 +647,9 @@ impl App {
     /// Close the active popup and schedule a full clear before the next draw
     /// so no artifact cells from the popup linger on screen.
     fn close_popup(&mut self) {
+        if self.popup == Some(PopupKind::QrCode) {
+            self.qr_visible.store(false, Ordering::Relaxed);
+        }
         self.popup = None;
         self.needs_clear = true;
     }
@@ -719,9 +727,10 @@ impl App {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.bridge_shutdown = Some(shutdown_tx);
         self.transport_up = false;
+        let qr_visible = Arc::clone(&self.qr_visible);
 
         tokio::spawn(async move {
-            if let Err(e) = run_bridge(config, transport, event_tx.clone(), shutdown_rx).await {
+            if let Err(e) = run_bridge(config, transport, event_tx.clone(), shutdown_rx, qr_visible).await {
                 let _ = event_tx.send(AppEvent::Bridge(BridgeEvent::BridgeError {
                     message: e.to_string(),
                 })).await;
@@ -983,6 +992,7 @@ impl App {
     async fn handle_command(&mut self, cmd: &str) {
         match cmd {
             "/qr" => {
+                self.qr_visible.store(true, Ordering::Relaxed);
                 self.popup = Some(PopupKind::QrCode);
             }
             "/quit" | "/exit" => {
@@ -1305,6 +1315,7 @@ impl App {
                 self.log_push("Pairing completed.".to_string());
                 // Close the QR popup automatically when the mobile app has paired.
                 if self.popup == Some(PopupKind::QrCode) {
+                    self.qr_visible.store(false, Ordering::Relaxed);
                     self.popup = None;
                     self.needs_clear = true;
                 }
@@ -1321,6 +1332,7 @@ impl App {
                 // pair their mobile client immediately.
                 if self.show_qr_on_ready {
                     self.show_qr_on_ready = false;
+                    self.qr_visible.store(true, Ordering::Relaxed);
                     self.popup = Some(PopupKind::QrCode);
                 }
             }

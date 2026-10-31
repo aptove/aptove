@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -52,6 +53,7 @@ pub async fn run_bridge(
     transport_name: String,
     event_tx: mpsc::Sender<AppEvent>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    qr_visible: Arc<AtomicBool>,
 ) -> Result<()> {
     let agent_command = config.agent_command.clone()
         .ok_or_else(|| anyhow::anyhow!("No agent_command in config"))?;
@@ -225,7 +227,8 @@ pub async fn run_bridge(
         .with_memory_max_bytes(config.memory_max_kb * 1024)
         .with_ws_max_message_bytes((config.ws_max_message_mb * 1024 * 1024) as usize);
 
-    // Spawn a task that auto-renews the pairing code every time it expires.
+    // Spawn a task that renews the pairing code only while the QR popup is visible.
+    // When qr_visible transitions false→true, a fresh code is generated immediately.
     // The task stops when `cancel_tx` is dropped at the end of this function.
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     {
@@ -233,20 +236,28 @@ pub async fn run_bridge(
         let tx_renew = event_tx.clone();
         let base_url_renew = base_url.clone();
         let transport_renew = transport_name.clone();
+        let qr_visible_task = Arc::clone(&qr_visible);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut was_visible = false;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {}
                     _ = &mut cancel_rx => break,
                 }
-                // Detect successful pairing — notify TUI and stop renewal.
+                // Always detect successful pairing so PairingCompleted fires promptly.
                 if pm_renew.is_used() {
                     let _ = tx_renew.send(AppEvent::Bridge(BridgeEvent::PairingCompleted)).await;
                     break;
                 }
-                if pm_renew.is_expired() {
+                let is_visible = qr_visible_task.load(Ordering::Relaxed);
+                let just_opened = is_visible && !was_visible;
+                was_visible = is_visible;
+
+                // Renew immediately when QR opens (fresh code every time), or when
+                // the code expires while the popup stays open.
+                if is_visible && (just_opened || pm_renew.is_expired()) {
                     pm_renew.renew();
                     let _ = tx_renew.send(AppEvent::Bridge(BridgeEvent::PairingUrlReady {
                         url: pm_renew.get_pairing_url(&base_url_renew),
