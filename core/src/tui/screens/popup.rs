@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::widgets::qr_popup::{centered_rect, render_qr_popup};
+use crate::tui::widgets::qr_popup::{centered_rect, copy_btn_at, parse_pairing_fields, render_qr_popup};
 
 /// Log level options shown in the picker (name, u8 value).
 pub const LOG_LEVELS: &[(&str, u8)] = &[
@@ -31,7 +31,8 @@ pub enum PushPopupStep {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PopupKind {
-    QrCode,
+    /// `text_mode`: when true, show the raw pairing URL instead of the QR graphic.
+    QrCode { text_mode: bool },
     /// Interactive log-level picker; `selected` is the highlighted row.
     LogLevel { selected: usize },
     /// Push notifications configuration (multi-step).
@@ -45,12 +46,14 @@ pub fn render_popup(
     frame: &mut Frame,
     kind: &PopupKind,
     qr_string: &Option<String>,
+    pairing_url: &Option<String>,
     pairing_secs: Option<u64>,
 ) {
     match kind {
-        PopupKind::QrCode => {
+        PopupKind::QrCode { text_mode } => {
             let qr = qr_string.as_deref().unwrap_or("No QR code available yet.\nStart the bridge first.");
-            render_qr_popup(frame, frame.area(), pairing_secs, qr);
+            let url = pairing_url.as_deref().unwrap_or("No pairing URL available yet.");
+            render_qr_popup(frame, frame.area(), pairing_secs, qr, *text_mode, url);
         }
         PopupKind::LogLevel { selected } => {
             render_log_level_popup(frame, *selected);
@@ -228,6 +231,38 @@ fn push_footer(frame: &mut Frame, inner: Rect, error: Option<&str>, hint: &str) 
         ])),
         Rect { y: footer_y, height: 1, ..inner },
     );
+}
+
+// ── Copy-button hit-testing (QrCode text mode) ────────────────────────────────
+
+/// Returns `(field_label, field_value)` if `(col, row)` lands on a numbered copy
+/// button inside the QrCode text-mode popup.  Returns `None` otherwise.
+pub fn copy_field_at(
+    kind: &PopupKind,
+    col: u16,
+    row: u16,
+    term: Rect,
+    pairing_url: &Option<String>,
+) -> Option<(&'static str, String)> {
+    if !matches!(kind, PopupKind::QrCode { text_mode: true }) {
+        return None;
+    }
+    let url = pairing_url.as_deref()?;
+
+    let border_inner = |area: Rect| Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let inner = border_inner(centered_rect(70, 80, term));
+
+    if let Some((idx, value)) = copy_btn_at(col, row, inner, url) {
+        let fields = parse_pairing_fields(url);
+        let label = fields.get(idx).map(|f| f.label)?;
+        return Some((label, value));
+    }
+    None
 }
 
 // ── URL hit-testing ───────────────────────────────────────────────────────────

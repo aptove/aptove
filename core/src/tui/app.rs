@@ -22,7 +22,7 @@ use crate::transport;
 use crate::tui::{
     events::{AppEvent, BridgeEvent},
     screens::{
-        popup::{render_popup, url_at, PopupKind, LOG_LEVELS, PushPopupStep},
+        popup::{copy_field_at, render_popup, url_at, PopupKind, LOG_LEVELS, PushPopupStep},
         running::{render_running, RunningState},
         wizard::{
             compute_transport_statuses, render_wizard, wizard_backspace,
@@ -329,7 +329,7 @@ impl App {
                                 let elapsed = t.elapsed().as_secs();
                                 60u64.saturating_sub(elapsed)
                             });
-                            render_popup(frame, popup, &self.qr_string, pairing_secs);
+                            render_popup(frame, popup, &self.qr_string, &self.pairing_url, pairing_secs);
                         }
                     }
                 }
@@ -652,7 +652,7 @@ impl App {
     /// Close the active popup and schedule a full clear before the next draw
     /// so no artifact cells from the popup linger on screen.
     fn close_popup(&mut self) {
-        if self.popup == Some(PopupKind::QrCode) {
+        if matches!(self.popup, Some(PopupKind::QrCode { .. })) {
             self.qr_visible.store(false, Ordering::Relaxed);
         }
         self.popup = None;
@@ -757,7 +757,14 @@ impl App {
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
             let mut clicked_url = false;
             if let Some(ref popup) = self.popup {
-                if let Some(url) = url_at(popup, mouse.column, mouse.row, self.term_area) {
+                if let Some((label, value)) = copy_field_at(popup, mouse.column, mouse.row, self.term_area, &self.pairing_url) {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(&value);
+                        self.copy_hint_msg = format!("Copied {}!", label);
+                        self.copy_hint_ticks = 10;
+                    }
+                    clicked_url = true;
+                } else if let Some(url) = url_at(popup, mouse.column, mouse.row, self.term_area) {
                     open::that(url).ok();
                     clicked_url = true;
                 }
@@ -1012,7 +1019,7 @@ impl App {
                     // until the fresh code arrives (avoids a brief "renewing…" flash).
                     self.pairing_received_at = None;
                     self.qr_visible.store(true, Ordering::Relaxed);
-                    self.popup = Some(PopupKind::QrCode);
+                    self.popup = Some(PopupKind::QrCode { text_mode: false });
                 }
             }
             "/quit" | "/exit" => {
@@ -1108,11 +1115,40 @@ impl App {
             Some(PopupKind::PushConfig { step }) => {
             self.handle_push_popup_key(key, step).await;
         }
-        _ => {
-                if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
-                    self.close_popup();
+        Some(PopupKind::QrCode { text_mode }) => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.close_popup(),
+                // [T] from QR mode → text mode
+                KeyCode::Char('t') | KeyCode::Char('T') if !text_mode => {
+                    self.popup = Some(PopupKind::QrCode { text_mode: true });
                 }
+                // [Q] from text mode → QR mode
+                KeyCode::Char('q') | KeyCode::Char('Q') if text_mode => {
+                    self.popup = Some(PopupKind::QrCode { text_mode: false });
+                }
+                // Number keys 1–9: copy the Nth copyable field by keyboard in text mode
+                KeyCode::Char(c) if text_mode && c.is_ascii_digit() && c != '0' => {
+                    let idx = (c as usize).saturating_sub('1' as usize);
+                    if let Some(url) = self.pairing_url.clone() {
+                        let fields = crate::tui::widgets::qr_popup::parse_pairing_fields(&url);
+                        let copyable: Vec<_> = fields.iter().filter(|f| f.copyable).collect();
+                        if let Some(field) = copyable.get(idx) {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(&field.value);
+                                self.copy_hint_msg = format!("Copied {}!", field.label);
+                                self.copy_hint_ticks = 10;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
+        }
+        _ => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
+                self.close_popup();
+            }
+        }
         }
     }
 
@@ -1334,7 +1370,7 @@ impl App {
             BridgeEvent::PairingCompleted => {
                 self.log_push("Pairing completed.".to_string());
                 // Close the QR popup automatically when the mobile app has paired.
-                if self.popup == Some(PopupKind::QrCode) {
+                if matches!(self.popup, Some(PopupKind::QrCode { .. })) {
                     self.qr_visible.store(false, Ordering::Relaxed);
                     self.popup = None;
                     self.needs_clear = true;
@@ -1353,7 +1389,7 @@ impl App {
                 if self.show_qr_on_ready {
                     self.show_qr_on_ready = false;
                     self.qr_visible.store(true, Ordering::Relaxed);
-                    self.popup = Some(PopupKind::QrCode);
+                    self.popup = Some(PopupKind::QrCode { text_mode: false });
                 }
             }
             BridgeEvent::AgentSpawned { command } => {
@@ -1400,7 +1436,7 @@ impl App {
                 // Don't auto-open QR for a failed transport.
                 self.show_qr_on_ready = false;
                 // If QR popup is open, replace it with the transport error notice.
-                if self.popup == Some(PopupKind::QrCode) {
+                if matches!(self.popup, Some(PopupKind::QrCode { .. })) {
                     self.qr_visible.store(false, Ordering::Relaxed);
                     self.popup = Some(PopupKind::TransportError);
                     self.needs_clear = true;
