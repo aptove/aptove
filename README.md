@@ -113,7 +113,6 @@ Type these in the input bar while the bridge is running:
 | `/qr` | Show QR pairing code for the mobile app |
 | `/agent` | Change the AI agent |
 | `/push` | Configure push notifications |
-| `/test-push` | Send a test push notification |
 | `/transport` | Change the transport |
 | `/keep-alive` | Toggle to prevent computer to sleep |
 | `/log-level` | Change log verbosity (default: WARN) |

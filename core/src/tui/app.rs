@@ -42,7 +42,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/transport",   "Change the transport"),
     ("/agent",       "Change the AI agent"),
     ("/push",        "Configure push notifications"),
-    ("/test-push",   "Send a test push notification"),
     ("/keep-alive",  "Toggle to prevent computer to sleep"),
     ("/log-level",   "Change log verbosity (default: WARN)"),
     ("/quit",        "Exit the bridge"),
@@ -385,9 +384,9 @@ impl App {
             }
             AppEvent::TestPushResult(result) => {
                 match result {
-                    Ok(true)  => self.log_push("Push notification sent successfully.".to_string()),
-                    Ok(false) => self.log_push("No registered devices / debounce active.".to_string()),
-                    Err(e)    => self.log_push_warn(format!("Push notification failed: {}", e)),
+                    Ok(true)  => self.log_push("Push configuration verified — test notification delivered.".to_string()),
+                    Ok(false) => self.log_push("Push configuration saved. No registered devices yet to deliver test notification to.".to_string()),
+                    Err(e)    => self.log_push_warn(format!("Push configuration saved, but test notification failed: {}", e)),
                 }
             }
         }
@@ -1035,9 +1034,6 @@ impl App {
                 self.screen = Screen::Wizard;
                 self.needs_clear = true;
             }
-            "/test-push" => {
-                self.handle_test_push();
-            }
             "/push" => {
                 let active = push_active_index(&self.config);
                 self.popup = Some(PopupKind::PushConfig {
@@ -1069,13 +1065,10 @@ impl App {
         }
     }
 
-    fn handle_test_push(&mut self) {
+    fn fire_test_push(&mut self) {
         let push_cfg = match &self.config.push_relay {
             Some(p) if !p.url.is_empty() && !p.client_id.is_empty() => p.clone(),
-            _ => {
-                self.log_push("Push relay not configured.".to_string());
-                return;
-            }
+            _ => return,
         };
         let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
@@ -1085,7 +1078,7 @@ impl App {
             let result = client.notify("test").await.map_err(|e| e.to_string());
             let _ = event_tx.send(AppEvent::TestPushResult(result)).await;
         });
-        self.log_push("Sending test push notification...".to_string());
+        self.log_push("Verifying push configuration — sending a test notification...".to_string());
     }
 
     async fn handle_popup_key(&mut self, key: crossterm::event::KeyEvent) {
@@ -1241,8 +1234,9 @@ impl App {
                                 client_secret,
                             });
                             let _ = self.config.save();
-                            self.log_push("Aptove push service configured. Messages are still buffered until the client reconnects.".to_string());
+                            self.log_push("Aptove push service configured.".to_string());
                             self.close_popup();
+                            self.fire_test_push();
                         }
                     }
                 }
@@ -1298,8 +1292,9 @@ impl App {
                                 client_secret,
                             });
                             let _ = self.config.save();
-                            self.log_push("Self-managed push service configured. Messages are still buffered until the client reconnects.".to_string());
+                            self.log_push("Self-managed push service configured.".to_string());
                             self.close_popup();
+                            self.fire_test_push();
                         }
                     }
                 }

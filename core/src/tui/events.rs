@@ -47,6 +47,5 @@ pub enum AppEvent {
 pub enum TuiCommand {
     Quit,
     Reconnect,
-    TestPush,
     RefreshQr,
 }
