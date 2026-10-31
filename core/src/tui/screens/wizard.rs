@@ -63,7 +63,10 @@ impl WizardState {
         }
 
         let enabled_count = config.enabled_transports().len();
-        if enabled_count != 1 {
+        let has_valid_last = config.last_transport.as_deref()
+            .map(|lt| config.enabled_transports().iter().any(|(n, _)| *n == lt))
+            .unwrap_or(false);
+        if enabled_count == 0 || (enabled_count != 1 && !has_valid_last) {
             let ts_available = is_tailscale_available();
             let ts_installed = is_tailscale_installed();
             let statuses = compute_transport_statuses(config, None, ts_available, ts_installed);

@@ -133,6 +133,11 @@ pub struct CommonConfig {
     /// images in a single prompt. Default: 50 MB.
     #[serde(default = "ws_max_message_mb_default")]
     pub ws_max_message_mb: u64,
+
+    /// Transport name used in the last session. Auto-selected on subsequent
+    /// startups to skip the transport chooser when the selection is still valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transport: Option<String>,
 }
 
 fn keep_alive_default() -> bool { true }
@@ -185,6 +190,7 @@ impl Default for CommonConfig {
             log_file_count: 5,
             memory_max_kb: 1024,
             ws_max_message_mb: 50,
+            last_transport: None,
         }
     }
 }

@@ -146,9 +146,15 @@ impl App {
         let wizard = WizardState::compute(&config);
         let screen = if wizard.is_some() { Screen::Wizard } else { Screen::Running };
 
-        // When no wizard is needed there's exactly one enabled transport — pre-select it.
+        // When no wizard is needed, pre-select the transport: prefer the last used one,
+        // fall back to the first enabled (covers the single-transport case).
         let selected_transport = if wizard.is_none() {
-            config.enabled_transports().first().map(|(n, _)| n.to_string())
+            if let Some(ref lt) = config.last_transport {
+                let in_enabled = config.enabled_transports().iter().any(|(n, _)| *n == lt.as_str());
+                if in_enabled { Some(lt.clone()) } else { config.enabled_transports().first().map(|(n, _)| n.to_string()) }
+            } else {
+                config.enabled_transports().first().map(|(n, _)| n.to_string())
+            }
         } else {
             None
         };
@@ -567,14 +573,23 @@ impl App {
     }
 
     async fn advance_wizard_after_agent(&mut self) {
-        let enabled_count = self.config.enabled_transports().len();
+        let enabled = self.config.enabled_transports();
+        let enabled_count = enabled.len();
         if enabled_count == 1 {
             // Exactly one transport configured — use it automatically.
-            let name = self.config.enabled_transports()[0].0.to_string();
+            let name = enabled[0].0.to_string();
             self.selected_transport = Some(name);
             self.advance_wizard_after_transport().await;
+        } else if let Some(lt) = self.config.last_transport.clone() {
+            // Multiple transports — reuse the last selection if it's still valid.
+            if enabled.iter().any(|(n, _)| *n == lt.as_str()) {
+                self.selected_transport = Some(lt);
+                self.advance_wizard_after_transport().await;
+            } else {
+                self.show_transport_pick();
+            }
         } else {
-            // 0 or 2+ transports: user must pick.
+            // 0 or 2+ transports with no prior selection: user must pick.
             self.show_transport_pick();
         }
     }
@@ -646,6 +661,11 @@ impl App {
     /// In reconnect mode: skip push setup, go straight to Done.
     /// In normal mode: continue with push setup check.
     async fn advance_after_transport_pick(&mut self) {
+        // Persist the transport choice so next startup skips the picker.
+        if let Some(ref t) = self.selected_transport {
+            self.config.last_transport = Some(t.clone());
+            let _ = self.config.save();
+        }
         let reconnect = self.wizard.as_ref().map(|w| w.reconnect_mode).unwrap_or(false);
         if reconnect {
             self.finish_wizard();
