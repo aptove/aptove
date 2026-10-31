@@ -198,6 +198,17 @@ pub async fn run_bridge(
         .with_working_dir(cwd.clone().into());
     if let Some(ref relay) = push_relay_arc {
         pool_builder = pool_builder.with_push_relay(std::sync::Arc::clone(relay));
+
+        // Channel for push delivery results: pool → TUI event loop.
+        let (push_result_tx, mut push_result_rx) = mpsc::channel::<bool>(8);
+        pool_builder = pool_builder.with_push_result_sender(push_result_tx);
+        let event_tx_push = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(delivered) = push_result_rx.recv().await {
+                let ev = if delivered { BridgeEvent::PushNotified } else { BridgeEvent::PushFailed };
+                let _ = event_tx_push.send(AppEvent::Bridge(ev)).await;
+            }
+        });
     }
     let pool = std::sync::Arc::new(tokio::sync::RwLock::new(pool_builder));
     let _reaper = start_reaper(pool.clone(), std::time::Duration::from_secs(60));

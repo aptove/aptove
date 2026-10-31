@@ -99,6 +99,8 @@ pub struct AgentPool {
     pub(crate) agents: HashMap<String, PooledAgent>,
     config: PoolConfig,
     push_relay: Option<Arc<PushRelayClient>>,
+    /// Forwards push delivery results (true = delivered, false = failed) to the TUI.
+    push_result_tx: Option<mpsc::Sender<bool>>,
     working_dir: PathBuf,
 }
 
@@ -108,6 +110,7 @@ impl AgentPool {
             agents: HashMap::new(),
             config,
             push_relay: None,
+            push_result_tx: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -121,6 +124,13 @@ impl AgentPool {
     /// Set the push relay client for sending notifications
     pub fn with_push_relay(mut self, push_relay: Arc<PushRelayClient>) -> Self {
         self.push_relay = Some(push_relay);
+        self
+    }
+
+    /// Set a channel for reporting push delivery results to the TUI.
+    /// `true` = delivered to at least one device, `false` = delivery failed.
+    pub fn with_push_result_sender(mut self, tx: mpsc::Sender<bool>) -> Self {
+        self.push_result_tx = Some(tx);
         self
     }
 
@@ -258,6 +268,7 @@ impl AgentPool {
         let stdout_tx = agent_to_ws_tx.clone();
         let stdout_reader = BufReader::new(stdout);
         let push_relay_for_stdout: Option<Arc<PushRelayClient>> = self.push_relay.clone();
+        let push_result_tx_for_stdout: Option<mpsc::Sender<bool>> = self.push_result_tx.clone();
         let agent_name_shared = Arc::new(tokio::sync::RwLock::new("Agent".to_string()));
         let agent_name_for_stdout = Arc::clone(&agent_name_shared);
         let overflow_buffer = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
@@ -299,8 +310,20 @@ impl AgentPool {
                             let name = agent_name_for_stdout.read().await.clone();
                             debug!("triggering push notification (overflow-buffer path) for '{}'", name);
                             match push_relay.notify(&name).await {
-                                Ok(sent) => debug!("push relay notify: sent={}", sent),
-                                Err(e) => warn!("push relay notify failed: {}", e),
+                                Ok(sent) => {
+                                    debug!("push relay notify: sent={}", sent);
+                                    if sent {
+                                        if let Some(ref tx) = push_result_tx_for_stdout {
+                                            let _ = tx.try_send(true);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("push relay notify failed: {}", e);
+                                    if let Some(ref tx) = push_result_tx_for_stdout {
+                                        let _ = tx.try_send(false);
+                                    }
+                                }
                             }
                         } else {
                             debug!("no push relay configured — push skipped");

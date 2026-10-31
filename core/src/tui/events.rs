@@ -23,6 +23,10 @@ pub enum BridgeEvent {
     AgentExited,
     TlsFingerprint { fingerprint: String },
     PushRegistered,
+    /// A push notification was successfully delivered to at least one device.
+    PushNotified,
+    /// A push notification delivery attempt failed.
+    PushFailed,
     BridgeStopped,
     BridgeError { message: String },
 }

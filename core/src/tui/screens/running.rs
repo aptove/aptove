@@ -8,15 +8,16 @@ use crate::tui::{
     widgets::{
         input_bar::{render_input_bar, AutocompleteState},
         log_panel::render_log_panel,
-        status_bar::{render_status_bar, TransportState},
+        status_bar::{render_status_bar, PushStatus, TransportState},
     },
 };
+
 
 pub struct RunningState<'a> {
     pub transport_name: String,
     pub transport_addr: String,
     pub transport_up: bool,
-    pub push_up: bool,
+    pub push_status: PushStatus,
     pub keep_alive: bool,
     /// Brief message shown in the log indicator row (e.g. "✓ Copied!").
     pub copy_hint: Option<&'a str>,
@@ -50,5 +51,5 @@ pub fn render_running(
     }];
     render_log_panel(frame, chunks[0], logs, log_scroll, log_highlight, state.copy_hint);
     render_input_bar(frame, chunks[1], input, "Type / for commands", autocomplete);
-    render_status_bar(frame, chunks[2], version, &transports, state.push_up, state.keep_alive);
+    render_status_bar(frame, chunks[2], version, &transports, &state.push_status, state.keep_alive);
 }

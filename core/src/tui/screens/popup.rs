@@ -69,7 +69,7 @@ pub fn render_popup(
 
 // ── Push configuration ────────────────────────────────────────────────────────
 
-const PUSH_DOC_URL: &str = "https://doc.aptove.com/bridge/push";
+const PUSH_DOC_URL: &str = "https://docs.aptove.com/bridge/push";
 const PUSH_REGISTER_URL: &str = "https://dash.aptove.com";
 const PUSH_MENU_LABELS: &[&str] = &[
     "No Push  (buffer messages, no notifications)",

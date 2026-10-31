@@ -30,7 +30,10 @@ use crate::tui::{
             wizard_url_at, WizardState, WizardStep,
         },
     },
-    widgets::input_bar::{AcEntry, AutocompleteState},
+    widgets::{
+        input_bar::{AcEntry, AutocompleteState},
+        status_bar::PushStatus,
+    },
 };
 use crate::runner::run_bridge;
 
@@ -65,7 +68,7 @@ pub struct App {
     transport_name: String,
     transport_addr: String,
     transport_up: bool,
-    push_up: bool,
+    push_status: PushStatus,
     pairing_url: Option<String>,
     qr_string: Option<String>,    // rendered QR (recomputed when pairing_url changes)
     tls_fingerprint: Option<String>,
@@ -170,6 +173,8 @@ impl App {
             None
         };
 
+        let initial_push_status = if config.push_relay.is_some() { PushStatus::Ok } else { PushStatus::Disabled };
+
         Self {
             screen,
             wizard,
@@ -178,7 +183,7 @@ impl App {
             transport_name: String::new(),
             transport_addr: String::new(),
             transport_up: false,
-            push_up: false,
+            push_status: initial_push_status,
             pairing_url: None,
             qr_string: None,
             tls_fingerprint: None,
@@ -273,7 +278,7 @@ impl App {
                             transport_name: self.transport_name.clone(),
                             transport_addr: self.transport_addr.clone(),
                             transport_up: self.transport_up,
-                            push_up: self.push_up,
+                            push_status: self.push_status.clone(),
                             keep_alive: self.keepalive.is_some(),
                             copy_hint: if self.copy_hint_ticks > 0 { Some(self.copy_hint_msg.as_str()) } else { None },
                         };
@@ -384,9 +389,18 @@ impl App {
             }
             AppEvent::TestPushResult(result) => {
                 match result {
-                    Ok(true)  => self.log_push("Push configuration verified — test notification delivered.".to_string()),
-                    Ok(false) => self.log_push("Push configuration saved. No registered devices yet to deliver test notification to.".to_string()),
-                    Err(e)    => self.log_push_warn(format!("Push configuration saved, but test notification failed: {}", e)),
+                    Ok(true) => {
+                        self.push_status = PushStatus::Ok;
+                        self.log_push("Push configuration verified — test notification delivered.".to_string());
+                    }
+                    Ok(false) => {
+                        self.push_status = PushStatus::Ok;
+                        self.log_push("Push configuration saved. No registered devices yet to deliver test notification to.".to_string());
+                    }
+                    Err(e) => {
+                        self.push_status = PushStatus::Error;
+                        self.log_push_warn(format!("Push configuration saved, but test notification failed: {}", e));
+                    }
                 }
             }
         }
@@ -1167,7 +1181,8 @@ impl App {
                         // No Push
                         self.config.push_relay = None;
                         let _ = self.config.save();
-                        self.log_push("Push disabled. Messages are buffered until the client reconnects.".to_string());
+                        self.push_status = PushStatus::Disabled;
+                        self.log_push("Push disabled. Messages are still buffered until the client reconnects.".to_string());
                         self.close_popup();
                     }
                     1 => {
@@ -1402,8 +1417,14 @@ impl App {
                 self.log_push(format!("TLS fingerprint: {}", fingerprint));
             }
             BridgeEvent::PushRegistered => {
-                self.push_up = true;
                 self.log_push("Push token registered.".to_string());
+            }
+            BridgeEvent::PushNotified => {
+                self.push_status = PushStatus::Ok;
+            }
+            BridgeEvent::PushFailed => {
+                self.push_status = PushStatus::Error;
+                self.log_push_warn("Push notification delivery failed.".to_string());
             }
             BridgeEvent::BridgeStopped => {
                 // Clear the sender unconditionally. If the bridge died on its
