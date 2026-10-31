@@ -175,23 +175,32 @@ pub fn wizard_next_field(state: &mut WizardState) {
         WizardStep::PluginSetup { fields, field_idx, .. } => {
             *field_idx = (*field_idx + 1) % fields.len().max(1);
         }
-        WizardStep::PushSetup { field_idx, .. } => {
-            *field_idx = (*field_idx + 1) % 4;
-        }
         _ => {}
     }
 }
 
 pub fn wizard_move_up(state: &mut WizardState) {
-    if let WizardStep::TransportPick { selected, .. } = &mut state.step {
-        *selected = selected.saturating_sub(1);
+    match &mut state.step {
+        WizardStep::TransportPick { selected, .. } => {
+            *selected = selected.saturating_sub(1);
+        }
+        WizardStep::PushSetup { field_idx, .. } => {
+            *field_idx = field_idx.saturating_sub(1);
+        }
+        _ => {}
     }
 }
 
 pub fn wizard_move_down(state: &mut WizardState) {
-    if let WizardStep::TransportPick { selected, .. } = &mut state.step {
-        let count = transport::all().len();
-        *selected = (*selected + 1).min(count.saturating_sub(1));
+    match &mut state.step {
+        WizardStep::TransportPick { selected, .. } => {
+            let count = transport::all().len();
+            *selected = (*selected + 1).min(count.saturating_sub(1));
+        }
+        WizardStep::PushSetup { field_idx, .. } => {
+            *field_idx = (*field_idx + 1).min(3);
+        }
+        _ => {}
     }
 }
 
@@ -335,7 +344,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
             let inner = wizard_panel(
                 frame,
                 "Push Notifications (optional)",
-                "Tab next field   Enter submit   Esc skip",
+                "\u{2191}/\u{2193} navigate   Enter submit   Esc skip",
                 None,
             );
             render_form_dynamic(frame, inner, &labels, &values, *field_idx, error.as_deref());

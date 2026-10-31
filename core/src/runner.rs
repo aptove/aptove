@@ -132,7 +132,7 @@ pub async fn run_bridge(
     let uses_external_tls = handle.uses_external_tls;
 
     // Attach push relay URL to pairing responses.
-    let pm_owned = if let Some(ref push_cfg) = config.push_relay {
+    let pm_owned = if let Some(push_cfg) = config.effective_push_relay() {
         if !push_cfg.url.is_empty() && !push_cfg.client_id.is_empty() {
             pm_owned.with_relay_url(push_cfg.url.clone())
         } else { pm_owned }
@@ -164,7 +164,7 @@ pub async fn run_bridge(
     info!("Agent command: {}", agent_command);
 
     // Build push relay client.
-    let push_relay_arc: Option<std::sync::Arc<PushRelayClient>> = if let Some(push_cfg) = &config.push_relay {
+    let push_relay_arc: Option<std::sync::Arc<PushRelayClient>> = if let Some(push_cfg) = config.effective_push_relay() {
         if !push_cfg.url.is_empty() && !push_cfg.token_url.is_empty() && !push_cfg.client_id.is_empty() {
             let client = PushRelayClient::new(push_cfg.url.clone(), String::new())
                 .with_jwt_credentials(

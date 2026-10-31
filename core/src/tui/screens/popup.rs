@@ -161,7 +161,7 @@ fn render_aptove_form(frame: &mut Frame, fields: &[String; 2], field_idx: usize,
         push_field(frame, y, inner.x, inner.width, label, &fields[i], i == field_idx);
     }
 
-    push_footer(frame, inner, error, "Tab next field   Enter confirm   Esc back");
+    push_footer(frame, inner, error, "\u{2191}/\u{2193} navigate   Enter confirm   Esc back");
 }
 
 fn render_self_managed_form(frame: &mut Frame, fields: &[String; 4], field_idx: usize, error: Option<&str>) {
@@ -182,7 +182,7 @@ fn render_self_managed_form(frame: &mut Frame, fields: &[String; 4], field_idx: 
         push_field(frame, y, inner.x, inner.width, label, &fields[i], i == field_idx);
     }
 
-    push_footer(frame, inner, error, "Tab next field   Enter confirm   Esc back");
+    push_footer(frame, inner, error, "\u{2191}/\u{2193} navigate   Enter confirm   Esc back");
 }
 
 /// Render a single labelled form field with cursor.

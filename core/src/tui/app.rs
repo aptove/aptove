@@ -17,7 +17,7 @@ use std::io;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::common_config::{CommonConfig, PushRelayConfig, TransportConfig};
+use crate::common_config::{CommonConfig, PushRelayConfig, PushSelection, TransportConfig};
 use crate::transport;
 use crate::tui::{
     events::{AppEvent, BridgeEvent},
@@ -45,7 +45,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/transport",   "Change the transport"),
     ("/agent",       "Change the AI agent"),
     ("/push",        "Configure push notifications"),
-    ("/keep-alive",  "Toggle to prevent computer to sleep"),
+    ("/keep-alive",  "Toggle to prevent the computer to sleep"),
     ("/log-level",   "Change log verbosity (default: WARN)"),
     ("/quit",        "Exit the bridge"),
 ];
@@ -170,8 +170,8 @@ impl App {
             None
         };
 
-        // If no wizard is needed but push isn't configured, auto-open the push menu.
-        let popup = if wizard.is_none() && config.push_relay.is_none() {
+        // If no wizard is needed and the user hasn't made a push choice yet, auto-open the push menu.
+        let popup = if wizard.is_none() && config.push_selection.is_none() {
             Some(PopupKind::PushConfig {
                 step: PushPopupStep::Menu { selected: 0, active: 0 },
             })
@@ -179,7 +179,7 @@ impl App {
             None
         };
 
-        let initial_push_status = if config.push_relay.is_some() { PushStatus::Ok } else { PushStatus::Disabled };
+        let initial_push_status = if config.effective_push_relay().is_some() { PushStatus::Ok } else { PushStatus::Disabled };
 
         Self {
             screen,
@@ -563,6 +563,7 @@ impl App {
                         client_id,
                         client_secret,
                     });
+                    self.config.push_selection = Some(PushSelection::Custom);
                     let _ = self.config.save();
                     self.advance_past_push();
                 }
@@ -711,8 +712,8 @@ impl App {
             self.start_bridge();
         }
 
-        // Auto-open push config if not yet set.
-        if self.config.push_relay.is_none() {
+        // Auto-open push config if the user hasn't made a push choice yet.
+        if self.config.push_selection.is_none() {
             self.popup = Some(PopupKind::PushConfig {
                 step: PushPopupStep::Menu { selected: 0, active: 0 },
             });
@@ -1198,8 +1199,9 @@ impl App {
                 }
                 KeyCode::Enter => match selected {
                     0 => {
-                        // No Push
-                        self.config.push_relay = None;
+                        // No Push — record the selection but keep credentials intact
+                        // so the user can re-enable without re-entering them.
+                        self.config.push_selection = Some(PushSelection::None);
                         let _ = self.config.save();
                         self.push_status = PushStatus::Disabled;
                         self.log_push("Push disabled. Messages are still buffered until the client reconnects.".to_string());
@@ -1245,9 +1247,14 @@ impl App {
                         step: PushPopupStep::AptoveForm { fields, field_idx, error: None },
                     });
                 }
-                KeyCode::Tab => {
+                KeyCode::Up => {
                     self.popup = Some(PopupKind::PushConfig {
-                        step: PushPopupStep::AptoveForm { fields, field_idx: (field_idx + 1) % 2, error: None },
+                        step: PushPopupStep::AptoveForm { fields, field_idx: field_idx.saturating_sub(1), error: None },
+                    });
+                }
+                KeyCode::Down => {
+                    self.popup = Some(PopupKind::PushConfig {
+                        step: PushPopupStep::AptoveForm { fields, field_idx: (field_idx + 1).min(1), error: None },
                     });
                 }
                 KeyCode::Enter => {
@@ -1272,6 +1279,7 @@ impl App {
                                 client_id,
                                 client_secret,
                             });
+                            self.config.push_selection = Some(PushSelection::Aptove);
                             let _ = self.config.save();
                             self.log_push("Aptove push service configured.".to_string());
                             self.close_popup();
@@ -1301,9 +1309,14 @@ impl App {
                         step: PushPopupStep::SelfManagedForm { fields, field_idx, error: None },
                     });
                 }
-                KeyCode::Tab => {
+                KeyCode::Up => {
                     self.popup = Some(PopupKind::PushConfig {
-                        step: PushPopupStep::SelfManagedForm { fields, field_idx: (field_idx + 1) % 4, error: None },
+                        step: PushPopupStep::SelfManagedForm { fields, field_idx: field_idx.saturating_sub(1), error: None },
+                    });
+                }
+                KeyCode::Down => {
+                    self.popup = Some(PopupKind::PushConfig {
+                        step: PushPopupStep::SelfManagedForm { fields, field_idx: (field_idx + 1).min(3), error: None },
                     });
                 }
                 KeyCode::Enter => {
@@ -1330,6 +1343,7 @@ impl App {
                                 client_id,
                                 client_secret,
                             });
+                            self.config.push_selection = Some(PushSelection::Custom);
                             let _ = self.config.save();
                             self.log_push("Self-managed push service configured.".to_string());
                             self.close_popup();
@@ -1516,10 +1530,10 @@ impl App {
 
 /// Returns 0 = No Push, 1 = Aptove, 2 = Self Managed.
 fn push_active_index(config: &CommonConfig) -> usize {
-    match &config.push_relay {
-        None => 0,
-        Some(pr) if pr.url.contains("aptove.com") => 1,
-        Some(_) => 2,
+    match &config.push_selection {
+        Some(crate::common_config::PushSelection::Aptove) => 1,
+        Some(crate::common_config::PushSelection::Custom) => 2,
+        _ => 0,
     }
 }
 

@@ -45,6 +45,23 @@ pub struct SlashCommandConfig {
     pub input_hint: Option<String>,
 }
 
+/// Which push provider the user has selected.
+///
+/// `None` (the `Option` default) means the user has not yet made a choice.
+/// After any explicit selection — including disabling push — this is `Some(...)`.
+/// The underlying `push_relay` credentials are preserved regardless of this
+/// selection so the user can re-enable push without re-entering them.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PushSelection {
+    /// Push notifications are explicitly disabled.
+    None,
+    /// Aptove hosted push service.
+    Aptove,
+    /// Self-managed / custom push service.
+    Custom,
+}
+
 /// Push relay configuration for sending background notifications.
 ///
 /// All four fields are required — push is silently disabled if the section is
@@ -89,10 +106,15 @@ pub struct CommonConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slash_commands: Vec<SlashCommandConfig>,
 
-    /// Push relay configuration. Push is disabled when this section is absent
-    /// or any required field is empty — no hardcoded defaults.
+    /// Push relay configuration. Credentials are stored here regardless of
+    /// `push_selection` so the user can re-enable push without re-entering them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_relay: Option<PushRelayConfig>,
+
+    /// Which push provider the user has explicitly selected.
+    /// `None` means no choice has been made yet (triggers the first-run push menu).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_selection: Option<PushSelection>,
 
     /// Agent command to launch (e.g., "copilot --acp"). Stored here so the
     /// wizard only asks once; previously it was a CLI flag on `bridge run`.
@@ -181,6 +203,7 @@ impl Default for CommonConfig {
             transports: HashMap::new(),
             slash_commands: Vec::new(),
             push_relay: None,
+            push_selection: None,
             agent_command: None,
             bind_address: None,
             advertise_addr: None,
@@ -251,6 +274,18 @@ impl CommonConfig {
             fs::set_permissions(&path, perms)?;
         }
         Ok(())
+    }
+
+    /// Returns the push relay config only when push is actually active.
+    ///
+    /// Returns `None` when `push_selection` is `None` (never configured),
+    /// `Some(PushSelection::None)` (explicitly disabled), or when `push_relay`
+    /// credentials are absent.
+    pub fn effective_push_relay(&self) -> Option<&PushRelayConfig> {
+        match &self.push_selection {
+            Some(PushSelection::Aptove) | Some(PushSelection::Custom) => self.push_relay.as_ref(),
+            _ => None,
+        }
     }
 
     /// Generate a UUID v4 `agent_id` if one is not already set.
