@@ -39,7 +39,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// All slash commands with their one-line descriptions.
 const COMMANDS: &[(&str, &str)] = &[
     ("/qr",          "Show QR pairing code for the mobile app"),
-    ("/reconnect",   "Restart the transport"),
+    ("/transport",   "Change the transport"),
     ("/agent",       "Change the AI agent"),
     ("/push",        "Configure push notifications"),
     ("/test-push",   "Send a test push notification"),
@@ -726,6 +726,7 @@ impl App {
         let event_tx = self.event_tx.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.bridge_shutdown = Some(shutdown_tx);
+        self.transport_name = transport.clone();
         self.transport_up = false;
         let qr_visible = Arc::clone(&self.qr_visible);
 
@@ -998,7 +999,7 @@ impl App {
             "/quit" | "/exit" => {
                 self.quit = true;
             }
-            "/reconnect" => {
+            "/transport" => {
                 // Show transport picker; the running bridge stays up until the
                 // user confirms a transport, then finish_wizard() stops the old
                 // bridge and waits for BridgeStopped before starting the new one.
