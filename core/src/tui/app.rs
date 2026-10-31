@@ -1076,6 +1076,10 @@ impl App {
             let client = PushRelayClient::new(push_cfg.url.clone(), String::new())
                 .with_jwt_credentials(push_cfg.token_url.clone(), push_cfg.client_id.clone(), push_cfg.client_secret.clone());
             let result = client.notify("test").await.map_err(|e| e.to_string());
+            // Yield briefly so all trace-level logs emitted during the push operation
+            // have time to reach the event channel before the result message is enqueued.
+            // Without this, the result INFO line can appear mid-flood of trace records.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let _ = event_tx.send(AppEvent::TestPushResult(result)).await;
         });
         self.log_push("Verifying push configuration — sending a test notification...".to_string());
