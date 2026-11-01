@@ -339,7 +339,7 @@ impl AgentPool {
         tokio::spawn(async move {
             let mut lines = stderr_reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                warn!("Pooled agent stderr: {}", line);
+                debug!("Pooled agent stderr: {}", line);
             }
             debug!("Pooled agent stderr reader task ended");
         });
