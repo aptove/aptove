@@ -33,7 +33,7 @@ pub fn render_status_bar(
 ) {
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
     let mut spans: Vec<Span> = vec![Span::styled(
-        format!(" Aptove Bridge v{}", version),
+        format!(" Aptove v{}", version),
         base,
     )];
 

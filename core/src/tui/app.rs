@@ -47,7 +47,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/push",        "Configure push notifications"),
     ("/keep-alive",  "Toggle to prevent the computer to sleep"),
     ("/log-level",   "Change log verbosity (default: WARN)"),
-    ("/quit",        "Exit the bridge"),
+    ("/quit",        "Exit Aptove"),
 ];
 
 #[derive(Debug, PartialEq)]

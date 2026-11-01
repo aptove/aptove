@@ -1,21 +1,21 @@
-# Bridge
+# Aptove
 
-[![GitHub Release](https://img.shields.io/github/v/release/aptove/bridge?logo=github&label=download)](https://github.com/aptove/bridge/releases/latest)
-[![crates.io](https://img.shields.io/crates/v/aptove-bridge.svg)](https://crates.io/crates/aptove-bridge)
-[![Security Audit](https://github.com/aptove/bridge/actions/workflows/security.yml/badge.svg)](https://github.com/aptove/bridge/actions/workflows/security.yml)
-[![CodeQL Analysis](https://github.com/aptove/bridge/actions/workflows/codeql.yml/badge.svg)](https://github.com/aptove/bridge/actions/workflows/codeql.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/aptove/aptove?logo=github&label=download)](https://github.com/aptove/aptove/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/aptove.svg)](https://crates.io/crates/aptove)
+[![Security Audit](https://github.com/aptove/aptove/actions/workflows/security.yml/badge.svg)](https://github.com/aptove/aptove/actions/workflows/security.yml)
+[![CodeQL Analysis](https://github.com/aptove/aptove/actions/workflows/codeql.yml/badge.svg)](https://github.com/aptove/aptove/actions/workflows/codeql.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/gD7AMxBy9y)
 
-Aptove Bridge is a stand-alone app to connect any AI Agents that support Agent Client Protocol (ACP) with the Aptove Mobile App to seamlessly manage the AI agents running in a server or computer.
+Aptove is a stand-alone CLI app to connect any AI Agents that support Agent Client Protocol (ACP) with the Aptove Mobile App to seamlessly manage the AI agents running in a server or computer.
 
-Bridge is actively developed and we are still experimenting. Until the first stable version, expect breaking changes in the configuration files and how it works.
+Aptove is actively developed and we are still experimenting. Until the first stable version, expect breaking changes in the configuration files and how it works.
 
 ## Transport Modes
 
 | Mode | Use Case | Documentation |
 |------|----------|---------------|
-| **Local** | Same Wi-Fi network, secure pairing with QR code | [docs.aptove.com](https://docs.aptove.com/bridge/local-transport) |
-| **Tailscale** | Private overlay network via MagicDNS + HTTPS (Recommended) | [docs.aptove.com](https://docs.aptove.com/bridge/tailscale-transport) |
+| **Local** | Same Wi-Fi network, secure pairing with QR code | [docs.aptove.com](https://docs.aptove.com/aptove/local-transport) |
+| **Tailscale** | Private overlay network via MagicDNS + HTTPS (Recommended) | [docs.aptove.com](https://docs.aptove.com/aptove/tailscale-transport) |
 
 ## Features
 
@@ -35,8 +35,8 @@ Bridge is actively developed and we are still experimenting. Until the first sta
 # Build
 cargo build --release
 
-# Start the bridge — opens the interactive TUI (setup wizard on first run)
-./target/release/bridge
+# Start Aptove — opens the interactive TUI (setup wizard on first run)
+./target/release/aptove
 ```
 
 On first launch the setup wizard runs automatically: it asks you to choose an agent command and a transport, then starts the bridge and shows a QR code for pairing.
@@ -47,7 +47,7 @@ Scan the QR code with the mobile app to connect.
 
 All settings live in `common.toml`, created automatically by the setup wizard on first run.
 
-**Default location:** `.aptove-bridge/` directory inside the working directory where the bridge is launched.
+**Default location:** `.aptove/` directory inside the working directory where Aptove is launched.
 
 #### Example `common.toml`
 
@@ -92,13 +92,13 @@ All bridge state lives in the config directory. These files are created automati
 | `cert.pem` | Self-signed TLS certificate for the local transport WebSocket server. Its fingerprint is embedded in the QR pairing payload for certificate pinning. |
 | `key.pem` | Private key for the TLS certificate. |
 | `cert-extra-sans.json` | Tracks extra Subject Alternative Names (IPs/hostnames) baked into the TLS cert. When these change, the cert is automatically regenerated. |
-| `logs/bridge.log` | Current log file. Rotated when it reaches `log_file_max_mb`. Up to `log_file_count` files are kept as `bridge.log`, `bridge.log.1`, etc. |
+| `logs/aptove.log` | Current log file. Rotated when it reaches `log_file_max_mb`. Up to `log_file_count` files are kept as `aptove.log`, `aptove.log.1`, etc. |
 
 ### TUI
 
-Running `bridge` opens the interactive TUI. On first launch it runs the setup wizard:
+Running `aptove` opens the interactive TUI. On first launch it runs the setup wizard:
 
-1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/bridge/agent](https://docs.aptove.com/bridge/agent) for a full list.
+1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/aptove/agent](https://docs.aptove.com/aptove/agent) for a full list.
 2. **Choose Transport** — pick Local (same Wi-Fi) or Tailscale.
 3. **QR Code** — scan with the mobile app to pair.
 
@@ -116,7 +116,7 @@ Type these in the input bar while the bridge is running:
 | `/transport` | Change the transport |
 | `/keep-alive` | Toggle to prevent the computer to sleep |
 | `/log-level` | Change log verbosity (default: WARN) |
-| `/quit` | Exit the bridge |
+| `/quit` | Exit Aptove |
 
 ---
 
@@ -221,7 +221,7 @@ echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | copilot --acp
 
 Please note that the project is extensively tested only with Copilot CLI. Open a bug report if you notice any issues with other ACP-Compatible Agents.
 
-Run `bridge` and pick an agent from the setup wizard, or edit `agent_command` directly in `common.toml`.
+Run `aptove` and pick an agent from the setup wizard, or edit `agent_command` directly in `common.toml`.
 
 ---
 
@@ -236,8 +236,8 @@ Run `bridge` and pick an agent from the setup wizard, or edit `agent_command` di
 To rotate credentials (invalidates all paired devices):
 
 ```bash
-rm .aptove-bridge/common.toml
-bridge
+rm .aptove/common.toml
+aptove
 ```
 
 ---

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bridge_core::{
+use aptove_core::{
     common_config::{CommonConfig, TransportConfig},
     pairing::PairingManager,
     tailscale::{get_tailscale_hostname, tailscale_serve_start},
@@ -20,7 +20,7 @@ pub struct LocalTransportPlugin;
 
 impl TransportPlugin for LocalTransportPlugin {
     fn name(&self) -> &'static str { "local" }
-    fn display_name(&self) -> &'static str { "Local Bridge Server" }
+    fn display_name(&self) -> &'static str { "Local Transport" }
 
     fn is_configured(&self, config: &CommonConfig) -> bool {
         config.transports.get("local").map(|t| t.enabled).unwrap_or(false)

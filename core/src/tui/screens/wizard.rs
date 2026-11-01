@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-const AGENT_DOCS_URL: &str = "https://docs.aptove.com/bridge/agent";
+const AGENT_DOCS_URL: &str = "https://docs.aptove.com/aptove/agent";
 
 use crate::common_config::CommonConfig;
 use crate::tailscale::{is_tailscale_available, is_tailscale_installed};
@@ -274,7 +274,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
             if !state.cancelable {
                 frame.render_widget(
                     Paragraph::new(
-                        "⚠  First run in this folder — bridge is starting in setup mode."
+                        "⚠  First run in this folder — Aptove is starting in setup mode."
                     ).style(Style::default().fg(Color::Yellow)),
                     Rect { y: inner.y + 7, height: 1, ..inner },
                 );
@@ -353,7 +353,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
         WizardStep::Done => {
             let inner = wizard_panel(frame, "Setup Complete", "", None);
             frame.render_widget(
-                Paragraph::new("Starting bridge...").style(Style::default().fg(Color::Green)),
+                Paragraph::new("Starting Aptove...").style(Style::default().fg(Color::Green)),
                 Rect { y: inner.y + 2, height: 2, ..inner },
             );
         }

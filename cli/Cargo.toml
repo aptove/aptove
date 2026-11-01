@@ -1,20 +1,20 @@
 [package]
-name = "aptove-bridge"
+name = "aptove"
 version = "0.4.0"
 edition = "2021"
 authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
 description = "A secure bridge between ACP agents and mobile apps"
-repository = "https://github.com/aptove/bridge"
+repository = "https://github.com/aptove/aptove"
 license = "MIT"
-homepage = "https://github.com/aptove/bridge"
+homepage = "https://github.com/aptove/aptove"
 readme = "../README.md"
 
 [[bin]]
-name = "bridge"
+name = "aptove"
 path = "src/main.rs"
 
 [dependencies]
-aptove-bridge-core = { path = "../core", version = "0.4.0" }
+aptove-core = { path = "../core", version = "0.4.0" }
 tokio = { version = "1.35", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 anyhow = "1.0"

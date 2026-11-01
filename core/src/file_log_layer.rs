@@ -1,10 +1,10 @@
 /// Size-rotating file log layer for tracing.
 ///
 /// Writes all events at DEBUG level and above to
-/// `<log_dir>/bridge.log`. When the file reaches `max_bytes`, it is
-/// rotated: `bridge.log.{count-1}` is deleted, each `.N` is renamed to
-/// `.N+1`, `bridge.log` becomes `bridge.log.1`, and a fresh
-/// `bridge.log` is opened. At most `file_count` files are kept on disk.
+/// `<log_dir>/aptove.log`. When the file reaches `max_bytes`, it is
+/// rotated: `aptove.log.{count-1}` is deleted, each `.N` is renamed to
+/// `.N+1`, `aptove.log` becomes `aptove.log.1`, and a fresh
+/// `aptove.log` is opened. At most `file_count` files are kept on disk.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -23,7 +23,7 @@ pub struct FileLogLayer {
 
 struct FileState {
     writer: Option<BufWriter<File>>,
-    /// Bytes written to the current `bridge.log` since it was opened.
+    /// Bytes written to the current `aptove.log` since it was opened.
     written: u64,
 }
 
@@ -35,7 +35,7 @@ impl FileLogLayer {
     pub fn new(log_dir: PathBuf, max_mb: u64, file_count: usize) -> Self {
         let _ = fs::create_dir_all(&log_dir);
 
-        let log_path = log_dir.join("bridge.log");
+        let log_path = log_dir.join("aptove.log");
         let (writer, written) = open_append(&log_path);
 
         Self {
@@ -47,25 +47,25 @@ impl FileLogLayer {
     }
 
     /// Rotate: delete oldest backup, shift each .N → .N+1, rename
-    /// current → .1, then the caller should open a fresh bridge.log.
+    /// current → .1, then the caller should open a fresh aptove.log.
     fn rotate(&self) {
         // Delete the oldest backup if we are at capacity.
-        let oldest = self.log_dir.join(format!("bridge.log.{}", self.file_count - 1));
+        let oldest = self.log_dir.join(format!("aptove.log.{}", self.file_count - 1));
         if oldest.exists() {
             let _ = fs::remove_file(&oldest);
         }
         // Shift existing backups: .N → .(N+1), starting from the highest.
         for n in (1..self.file_count - 1).rev() {
-            let from = self.log_dir.join(format!("bridge.log.{}", n));
-            let to   = self.log_dir.join(format!("bridge.log.{}", n + 1));
+            let from = self.log_dir.join(format!("aptove.log.{}", n));
+            let to   = self.log_dir.join(format!("aptove.log.{}", n + 1));
             if from.exists() {
                 let _ = fs::rename(&from, &to);
             }
         }
         // Rename current log to .1.
-        let current = self.log_dir.join("bridge.log");
+        let current = self.log_dir.join("aptove.log");
         if current.exists() {
-            let _ = fs::rename(&current, self.log_dir.join("bridge.log.1"));
+            let _ = fs::rename(&current, self.log_dir.join("aptove.log.1"));
         }
     }
 }
@@ -115,7 +115,7 @@ impl<S: Subscriber> Layer<S> for FileLogLayer {
         if st.written + line_len > self.max_bytes {
             st.writer = None; // close current file before renaming
             self.rotate();
-            let log_path = self.log_dir.join("bridge.log");
+            let log_path = self.log_dir.join("aptove.log");
             let (w, _) = open_append(&log_path);
             st.writer = w;
             st.written = 0;
@@ -123,7 +123,7 @@ impl<S: Subscriber> Layer<S> for FileLogLayer {
 
         // Lazily (re)open on first use or after a rotation.
         if st.writer.is_none() {
-            let log_path = self.log_dir.join("bridge.log");
+            let log_path = self.log_dir.join("aptove.log");
             let (w, existing) = open_append(&log_path);
             st.writer = w;
             st.written = existing;

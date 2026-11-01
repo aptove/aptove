@@ -4,10 +4,10 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing_subscriber::prelude::*;
 
-use bridge_core::common_config::CommonConfig;
-use bridge_core::transport;
-use bridge_core::file_log_layer::FileLogLayer;
-use bridge_core::tui::{
+use aptove_core::common_config::CommonConfig;
+use aptove_core::transport;
+use aptove_core::file_log_layer::FileLogLayer;
+use aptove_core::tui::{
     app::App,
     events::AppEvent,
     log_layer::{TuiLogLayer, level_name_to_u8},

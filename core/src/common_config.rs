@@ -145,7 +145,7 @@ pub struct CommonConfig {
     #[serde(default = "log_file_max_mb_default")]
     pub log_file_max_mb: u64,
 
-    /// Number of rotated log files to keep in .aptove-bridge/logs/ (default: 5).
+    /// Number of rotated log files to keep in .aptove/logs/ (default: 5).
     #[serde(default = "log_file_count_default")]
     pub log_file_count: usize,
 
@@ -236,7 +236,7 @@ impl CommonConfig {
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".aptove-bridge")
+                .join(".aptove")
         };
         fs::create_dir_all(&dir).ok();
         dir

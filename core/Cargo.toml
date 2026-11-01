@@ -1,15 +1,15 @@
 [package]
-name = "aptove-bridge-core"
+name = "aptove-core"
 version = "0.4.0"
 edition = "2021"
 authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
 description = "Core library for the Aptove bridge"
-repository = "https://github.com/aptove/bridge"
+repository = "https://github.com/aptove/aptove"
 license = "MIT"
 readme = "README.md"
 
 [lib]
-name = "bridge_core"
+name = "aptove_core"
 path = "src/lib.rs"
 
 [dependencies]

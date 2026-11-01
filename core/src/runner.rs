@@ -61,13 +61,13 @@ pub async fn run_bridge(
     // Acquire exclusive lock on the config dir.
     let _bridge_lock = {
         use fs2::FileExt;
-        let lock_path = CommonConfig::config_dir().join("bridge.lock");
+        let lock_path = CommonConfig::config_dir().join("aptove.lock");
         let lock_file = std::fs::OpenOptions::new()
             .create(true).write(true)
             .open(&lock_path)
-            .with_context(|| format!("Failed to open bridge lock file: {}", lock_path.display()))?;
+            .with_context(|| format!("Failed to open aptove lock file: {}", lock_path.display()))?;
         lock_file.try_lock_exclusive().map_err(|_| anyhow::anyhow!(
-            "Another bridge instance is already running from this folder."
+            "Another Aptove instance is already running from this folder."
         ))?;
         lock_file
     };

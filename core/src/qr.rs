@@ -115,7 +115,7 @@ pub fn display_qr_code_with_pairing(hostname: &str, pairing: &PairingManager) ->
     let qr_output = render_qr_code(&pairing_url)?;
     
     // Save QR code as image for easier scanning
-    let qr_image_path = std::env::temp_dir().join("bridge_pairing_qr.png");
+    let qr_image_path = std::env::temp_dir().join("aptove_pairing_qr.png");
     if let Err(e) = save_qr_code_image(&pairing_url, &qr_image_path) {
         tracing::warn!("Could not save QR code image: {}", e);
     }

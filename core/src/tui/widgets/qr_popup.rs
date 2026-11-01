@@ -74,8 +74,8 @@ pub fn parse_pairing_fields(url: &str) -> Vec<PairingField> {
 
     match path_type {
         "local" => {
-            fields.push(PairingField { label: "Connection Type",         value: "Local Bridge".to_string(),                          copyable: false });
-            fields.push(PairingField { label: "Bridge Address",          value: host,                                                copyable: true  });
+            fields.push(PairingField { label: "Connection Type",         value: "Local".to_string(),                                 copyable: false });
+            fields.push(PairingField { label: "Aptove Address",          value: host,                                                copyable: true  });
             fields.push(PairingField { label: "Use HTTPS",               value: if is_https { "Yes" } else { "No" }.to_string(),     copyable: false });
             fields.push(PairingField { label: "Pairing Code",            value: code,                                                copyable: true  });
             if !fp.is_empty() {
@@ -84,7 +84,7 @@ pub fn parse_pairing_fields(url: &str) -> Vec<PairingField> {
         }
         "tailscale" => {
             fields.push(PairingField { label: "Connection Type",         value: "Tailscale".to_string(),                             copyable: false });
-            fields.push(PairingField { label: "Bridge Address",          value: host,                                                copyable: true  });
+            fields.push(PairingField { label: "Aptove Address",          value: host,                                                copyable: true  });
             fields.push(PairingField { label: "Pairing Code",            value: code,                                                copyable: true  });
             if !fp.is_empty() {
                 fields.push(PairingField { label: "Certificate Fingerprint", value: fp,                                              copyable: true  });
@@ -92,7 +92,7 @@ pub fn parse_pairing_fields(url: &str) -> Vec<PairingField> {
         }
         "cloudflare" => {
             fields.push(PairingField { label: "Connection Type",         value: "Cloudflare".to_string(),                            copyable: false });
-            fields.push(PairingField { label: "Bridge URL",              value: format!("https://{}", host),                         copyable: true  });
+            fields.push(PairingField { label: "Aptove URL",              value: format!("https://{}", host),                         copyable: true  });
             fields.push(PairingField { label: "Pairing Code",            value: code,                                                copyable: true  });
         }
         _ => {}

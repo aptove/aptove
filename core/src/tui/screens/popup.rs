@@ -51,7 +51,7 @@ pub fn render_popup(
 ) {
     match kind {
         PopupKind::QrCode { text_mode } => {
-            let qr = qr_string.as_deref().unwrap_or("No QR code available yet.\nStart the bridge first.");
+            let qr = qr_string.as_deref().unwrap_or("No QR code available yet.\nStart Aptove first.");
             let url = pairing_url.as_deref().unwrap_or("No pairing URL available yet.");
             render_qr_popup(frame, frame.area(), pairing_secs, qr, *text_mode, url);
         }
@@ -327,7 +327,7 @@ fn render_transport_error_popup(frame: &mut Frame) {
         Paragraph::new(
             "The transport is not running.\n\n\
              Fix the error shown in the logs,\n\
-             then use /qr once the bridge is up."
+             then use /qr once Aptove is up."
         )
         .style(Style::default().fg(Color::Yellow))
         .wrap(Wrap { trim: false }),
