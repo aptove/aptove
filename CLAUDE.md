@@ -68,13 +68,13 @@ pub trait TransportPlugin: Send + Sync + 'static {
 
 ## Bridge Protocol Layer (`bridge/*` namespace)
 
-Every ACP session is wrapped by a bridge-specific protocol layer that operates in the `bridge/*` JSON-RPC namespace. These messages are handled entirely by the bridge — they are never forwarded to the underlying agent process.
+Every ACP session is wrapped by a bridge-specific protocol layer that operates in the `bridge/*` JSON-RPC namespace. These messages are handled entirely by Aptove CLI — they are never forwarded to the underlying agent process.
 
-**The bridge must not interfere with ACP protocol messages.** ACP messages (`initialize`, `session/*`, `notifications/*`, `session/prompt`, etc.) must be passed through unchanged. The bridge must never modify, suppress, synthesize, or intercept ACP messages except for the explicitly sanctioned extension points documented in `docs/bridge/advanced/`. Before adding any new behavior that touches ACP messages, add a page there and get it reviewed.
+**Aptove CLI must not interfere with ACP protocol messages.** ACP messages (`initialize`, `session/*`, `notifications/*`, `session/prompt`, etc.) must be passed through unchanged. Aptove CLI must never modify, suppress, synthesize, or intercept ACP messages except for the explicitly sanctioned extension points documented in `docs/aptove/advanced/`. Before adding any new behavior that touches ACP messages, add a page there and get it reviewed.
 
 ### Sanctioned extension points (do not remove without review)
 
-Each item below has a dedicated page in `docs/bridge/advanced/`:
+Each item below has a dedicated page in `docs/aptove/advanced/`:
 
 | Behaviour | ACP method(s) touched | Doc page |
 |-----------|-----------------------|----------|
@@ -115,8 +115,8 @@ Do **not** rely solely on the popup widget's own `bg(Color::Black)` style — th
 Every screen (wizard step, popup) **must** have an Escape option:
 
 - Popups: `Esc` closes the popup and returns to the running screen.
-- Wizard opened from a running bridge (`/config`, `/reconnect`): `Esc` cancels the wizard and returns to the running screen. This requires `WizardState::cancelable = true`.
-- First-run wizard (no config): `Esc` on `AgentSelect` / `TransportPick` is a no-op (the user must configure before the bridge can start).
+- Wizard opened from a running Aptove CLI (`/config`, `/reconnect`): `Esc` cancels the wizard and returns to the running screen. This requires `WizardState::cancelable = true`.
+- First-run wizard (no config): `Esc` on `AgentSelect` / `TransportPick` is a no-op (the user must configure before Aptove CLI can start).
 - Wizard sub-steps (`AgentCustomInput`): `Esc` goes back one step (to `AgentSelect`).
 - `PushSetup`: `Esc` skips push setup and advances the wizard.
 - Enterprise wizard steps: `Esc` goes back to `TransportPick`.
@@ -125,7 +125,7 @@ The hint text shown at the bottom of each wizard panel must include `Esc cancel`
 
 ### First-Run and Missing-Config Wizard
 
-Every time the bridge starts, `WizardState::compute()` checks `CommonConfig` for missing or incomplete configuration and runs the relevant setup screen **before** launching the bridge. The checks in order are:
+Every time Aptove CLI starts, `WizardState::compute()` checks `CommonConfig` for missing or incomplete configuration and runs the relevant setup screen **before** launching Aptove CLI. The checks in order are:
 
 1. `agent_command` missing → `AgentSelect` screen
 2. 0 enabled transports → `TransportPick` screen (user must choose a transport)
@@ -135,7 +135,7 @@ Every time the bridge starts, `WizardState::compute()` checks `CommonConfig` for
 
 **`CommonConfig::default()` must NOT pre-enable any transport.** The transport map starts empty so that a brand-new installation always shows the transport picker. Existing configs loaded from `common.toml` are unaffected.
 
-After any wizard completion (`finish_wizard()`), the QR pairing popup is opened automatically as soon as the bridge reports `PairingUrlReady`. This lets the user pair their mobile client immediately without typing `/qr`.
+After any wizard completion (`finish_wizard()`), the QR pairing popup is opened automatically as soon as Aptove CLI reports `PairingUrlReady`. This lets the user pair their mobile client immediately without typing `/qr`.
 
 ---
 
@@ -187,7 +187,7 @@ Use the correct `tracing` log level for every message:
 When adding, changing, or removing any user-facing feature (TUI wizard steps, slash commands, transport modes, push notifications, configuration fields, CLI flags, etc.), you **must** update the following before committing:
 
 1. **`README.md`** in this repo — keep the TUI section, slash commands table, configuration examples, and feature list accurate.
-2. **`docs/bridge/`** in the docs repo — update or create the relevant page under `docs.aptove.com/bridge/`. If a page doesn't exist yet, add it and register it in `docs/docs.json` navigation.
+2. **`docs/aptove/`** in the docs repo — update or create the relevant page under `docs.aptove.com/aptove/`. If a page doesn't exist yet, add it and register it in `docs/docs.json` navigation.
 
 This applies to all change types: new feature, modified behaviour, and removal. Do not leave docs describing functionality that no longer exists or missing docs for functionality that does.
 
@@ -225,7 +225,7 @@ When asked to create a new release tag (e.g. `v0.2.7`), follow these steps in or
 6. **Update the submodule pointer in the monorepo** (`openspec-acp-swift-sdk`):
    ```bash
    cd /path/to/openspec-acp-swift-sdk
-   git add bridge
-   git commit -m "chore: update bridge submodule pointer to vX.Y.Z"
+   git add aptove
+   git commit -m "chore: update aptove submodule pointer to vX.Y.Z"
    git push
    ```

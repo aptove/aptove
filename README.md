@@ -39,7 +39,7 @@ cargo build --release
 ./target/release/aptove
 ```
 
-On first launch the setup wizard runs automatically: it asks you to choose an agent command and a transport, then starts the bridge and shows a QR code for pairing.
+On first launch the setup wizard runs automatically: it asks you to choose an agent command and a transport, then starts Aptove CLI and shows a QR code for pairing.
 
 Scan the QR code with the mobile app to connect.
 
@@ -56,7 +56,7 @@ agent_id   = "550e8400-e29b-41d4-a716-446655440000"  # auto-generated UUID
 auth_token = "base64urltoken"                         # auto-generated
 agent_command = "copilot --acp"                       # set by setup wizard
 
-keep_alive = true    # prevent system sleep while bridge is running
+keep_alive = true    # prevent system sleep while Aptove CLI is running
 log_level  = "WARN"  # ERROR / WARN / INFO / DEBUG / TRACE
 
 log_file_max_mb = 10  # max size per log file in MB before rotation (default: 10)
@@ -84,7 +84,7 @@ No transports are pre-enabled. The setup wizard asks you to choose one on first 
 
 #### Config Directory Files
 
-All bridge state lives in the config directory. These files are created automatically on first run:
+All Aptove CLI state lives in the config directory. These files are created automatically on first run:
 
 | File | Purpose |
 |------|---------|
@@ -102,11 +102,11 @@ Running `aptove` opens the interactive TUI. On first launch it runs the setup wi
 2. **Choose Transport** — pick Local (same Wi-Fi) or Tailscale.
 3. **QR Code** — scan with the mobile app to pair.
 
-After the wizard completes the bridge starts. Type `/` in the input bar to see available commands.
+After the wizard completes Aptove CLI starts. Type `/` in the input bar to see available commands.
 
 ### TUI slash commands
 
-Type these in the input bar while the bridge is running:
+Type these in the input bar while Aptove CLI is running:
 
 | Command | Description |
 |---------|-------------|
@@ -122,12 +122,12 @@ Type these in the input bar while the bridge is running:
 
 ## Push Notifications
 
-The bridge can alert the mobile app when the agent produces output while the app is backgrounded (WebSocket disconnected). The bridge never holds APNs/FCM credentials — it authenticates to a push relay service using a short-lived RS256 JWT and the relay handles APNs/FCM delivery.
+Aptove CLI can alert the mobile app when the agent produces output while the app is backgrounded (WebSocket disconnected). Aptove CLI never holds APNs/FCM credentials — it authenticates to a push relay service using a short-lived RS256 JWT and the relay handles APNs/FCM delivery.
 
 ### How it works
 
 ```
-Mobile app (backgrounded)          Bridge                      Push relay
+Mobile app (backgrounded)          Aptove CLI                  Push relay
                                                                (push.aptove.com)
         │                             │                              │
         │  [app backgrounds]          │                              │
@@ -149,7 +149,7 @@ Mobile app (backgrounded)          Bridge                      Push relay
 
 ### Trigger logic
 
-Push is triggered by **passive failure detection** — the bridge never polls for connectivity:
+Push is triggered by **passive failure detection** — Aptove CLI never polls for connectivity:
 
 | Site | Trigger |
 |------|---------|
@@ -174,9 +174,9 @@ All four fields are required. If the section is absent or any field is empty, pu
 
 ### Security
 
-- Device tokens travel over the bridge's authenticated WebSocket (bearer `authToken` + TLS) — the same channel that carries the full LLM conversation.
-- JWT credentials (`client_id`, `client_secret`) never leave the bridge process.
-- The relay isolates registered devices per JWT `sub` (`client_id`) — one bridge cannot trigger pushes for another bridge's devices.
+- Device tokens travel over Aptove CLI's authenticated WebSocket (bearer `authToken` + TLS) — the same channel that carries the full LLM conversation.
+- JWT credentials (`client_id`, `client_secret`) never leave the Aptove CLI process.
+- The relay isolates registered devices per JWT `sub` (`client_id`) — one Aptove CLI instance cannot trigger pushes for another instance's devices.
 - Notification content is fixed (`"Your agent has new activity"`) to prevent leaking agent response text.
 
 ---
@@ -185,12 +185,12 @@ All four fields are required. If the section is absent or any field is empty, pu
 
 ```
 ┌─────────────┐                    ┌───────────────────────┐        ┌──────────────┐
-│  Client App │◄──────────────────►│  bridge binary        │◄──────►│  ACP Agent   │
+│  Client App │◄──────────────────►│  Aptove CLI binary    │◄──────►│  ACP Agent   │
 │ (iOS/Android│  WebSocket (TLS)   │  (transport listener) │  stdio │  (your cmd)  │
 └─────────────┘                    └───────────────────────┘        └──────────────┘
 ```
 
-The agent process is spawned as a subprocess via stdio. The bridge handles the WebSocket server, TLS, auth, and pairing.
+The agent process is spawned as a subprocess via stdio. Aptove CLI handles the WebSocket server, TLS, auth, and pairing.
 
 ---
 
@@ -201,8 +201,8 @@ The agent process is spawned as a subprocess via stdio. The bridge handles the W
 | QR code not scanning | Phone camera can't read terminal QR | Increase terminal font size, or copy the pairing URL and open manually |
 | "Unauthorized" on connect | Wrong or missing auth token | Re-scan QR code |
 | TLS handshake failure | Certificate mismatch | Delete the config dir and restart to regenerate certs; re-pair the device |
-| App cannot reach bridge | Firewall blocking the port | Check OS firewall; ensure the port in `common.toml` is open |
-| Transport fails to start | No transport has `enabled = true` | Run the bridge and check the setup wizard |
+| App cannot reach Aptove CLI | Firewall blocking the port | Check OS firewall; ensure the port in `common.toml` is open |
+| Transport fails to start | No transport has `enabled = true` | Run Aptove CLI and check the setup wizard |
 
 ### Debugging
 
@@ -231,7 +231,7 @@ Run `aptove` and pick an agent from the setup wizard, or edit `agent_command` di
 - **TLS**: self-signed certificate generated on first run. Certificate fingerprint is included in the QR pairing payload and pinned by the mobile app to prevent MITM attacks.
 - **Pairing codes**: 6-digit, single-use, expire after 60 seconds. Rate-limited to 5 attempts per code.
 - **`common.toml`**: contains all secrets. Permissions are set to `0600` automatically. Keep it secure.
-- **Agent command**: saved to `agent_command` in `common.toml` by the setup wizard. It can be changed at any time via the `/agent` TUI command. The bridge is an operator tool: whoever can invoke it already has local shell access, so the agent command is implicitly trusted to the same degree as any other command that user could run.
+- **Agent command**: saved to `agent_command` in `common.toml` by the setup wizard. It can be changed at any time via the `/agent` TUI command. Aptove CLI is an operator tool: whoever can invoke it already has local shell access, so the agent command is implicitly trusted to the same degree as any other command that user could run.
 
 To rotate credentials (invalidates all paired devices):
 
