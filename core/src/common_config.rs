@@ -82,9 +82,7 @@ pub struct PushRelayConfig {
     pub client_secret: String,
 }
 
-/// Stable agent identity and multi-transport settings.
-///
-/// Replaces the old `BridgeConfig` / `bridge.toml`. Stored as `common.toml`.
+/// Stable agent identity and multi-transport settings. Stored as `common.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommonConfig {
     /// Stable UUID that identifies this agent across all transports.

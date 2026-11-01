@@ -166,7 +166,7 @@ pub async fn run_bridge(
     // Build push relay client.
     let push_relay_arc: Option<std::sync::Arc<PushRelayClient>> = if let Some(push_cfg) = config.effective_push_relay() {
         if !push_cfg.url.is_empty() && !push_cfg.token_url.is_empty() && !push_cfg.client_id.is_empty() {
-            let client = PushRelayClient::new(push_cfg.url.clone(), String::new())
+            let client = PushRelayClient::new(push_cfg.url.clone())
                 .with_jwt_credentials(
                     push_cfg.token_url.clone(),
                     push_cfg.client_id.clone(),

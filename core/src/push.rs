@@ -77,8 +77,7 @@ impl PushRelayClient {
     /// Create a new push relay client.
     ///
     /// - `relay_url`: Base URL of the push relay (e.g., "https://push.aptove.com")
-    /// - `_relay_token`: Kept for API compatibility; unused when JWT credentials are set
-    pub fn new(relay_url: String, _relay_token: String) -> Self {
+    pub fn new(relay_url: String) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()

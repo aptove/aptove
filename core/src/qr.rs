@@ -144,7 +144,7 @@ pub fn display_qr_code_with_pairing(hostname: &str, pairing: &PairingManager) ->
 /// Display a static QR code in the terminal for mobile scanning (no pairing handshake).
 ///
 /// `connection_json` is the pre-built JSON string to encode (e.g. from
-/// `CommonConfig::to_connection_json()` or `BridgeConfig::to_connection_json()`).
+/// `CommonConfig::to_connection_json()`).
 pub fn display_qr_code(connection_json: &str, transport: &str) -> Result<()> {
     // Render the QR code
     let qr_output = render_qr_code(connection_json)?;

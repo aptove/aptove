@@ -1108,7 +1108,7 @@ impl App {
         let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
             use crate::push::PushRelayClient;
-            let client = PushRelayClient::new(push_cfg.url.clone(), String::new())
+            let client = PushRelayClient::new(push_cfg.url.clone())
                 .with_jwt_credentials(push_cfg.token_url.clone(), push_cfg.client_id.clone(), push_cfg.client_secret.clone());
             let result = client.notify("test").await.map_err(|e| e.to_string());
             // Yield briefly so all trace-level logs emitted during the push operation

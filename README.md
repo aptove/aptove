@@ -114,7 +114,7 @@ Type these in the input bar while the bridge is running:
 | `/agent` | Change the AI agent |
 | `/push` | Configure push notifications |
 | `/transport` | Change the transport |
-| `/keep-alive` | Toggle to prevent computer to sleep |
+| `/keep-alive` | Toggle to prevent the computer to sleep |
 | `/log-level` | Change log verbosity (default: WARN) |
 | `/quit` | Exit the bridge |
 
