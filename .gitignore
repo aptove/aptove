@@ -27,3 +27,6 @@ target/
 
 # Bridge Config
 .aptove-bridge/
+
+# Wrangler CLI cache (local developer state, not repo content)
+.wrangler/
