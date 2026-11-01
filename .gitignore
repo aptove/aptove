@@ -25,8 +25,8 @@ target/
 .env
 .env.local
 
-# Bridge Config
-.aptove-bridge/
+# Aptove CLI Config
+.aptove/
 
 # Wrangler CLI cache (local developer state, not repo content)
 .wrangler/
