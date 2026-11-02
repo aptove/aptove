@@ -68,9 +68,9 @@ pub trait TransportPlugin: Send + Sync + 'static {
 
 ## Bridge Protocol Layer (`bridge/*` namespace)
 
-Every ACP session is wrapped by a bridge-specific protocol layer that operates in the `bridge/*` JSON-RPC namespace. These messages are handled entirely by Aptove CLI — they are never forwarded to the underlying agent process.
+Every ACP session is wrapped by a bridge-specific protocol layer that operates in the `bridge/*` JSON-RPC namespace. These messages are handled entirely by Aptove Router — they are never forwarded to the underlying agent process.
 
-**Aptove CLI must not interfere with ACP protocol messages.** ACP messages (`initialize`, `session/*`, `notifications/*`, `session/prompt`, etc.) must be passed through unchanged. Aptove CLI must never modify, suppress, synthesize, or intercept ACP messages except for the explicitly sanctioned extension points documented in `docs/aptove/advanced/`. Before adding any new behavior that touches ACP messages, add a page there and get it reviewed.
+**Aptove Router must not interfere with ACP protocol messages.** ACP messages (`initialize`, `session/*`, `notifications/*`, `session/prompt`, etc.) must be passed through unchanged. Aptove Router must never modify, suppress, synthesize, or intercept ACP messages except for the explicitly sanctioned extension points documented in `docs/aptove/advanced/`. Before adding any new behavior that touches ACP messages, add a page there and get it reviewed.
 
 ### Sanctioned extension points (do not remove without review)
 
@@ -115,8 +115,8 @@ Do **not** rely solely on the popup widget's own `bg(Color::Black)` style — th
 Every screen (wizard step, popup) **must** have an Escape option:
 
 - Popups: `Esc` closes the popup and returns to the running screen.
-- Wizard opened from a running Aptove CLI (`/config`, `/reconnect`): `Esc` cancels the wizard and returns to the running screen. This requires `WizardState::cancelable = true`.
-- First-run wizard (no config): `Esc` on `AgentSelect` / `TransportPick` is a no-op (the user must configure before Aptove CLI can start).
+- Wizard opened from a running Aptove Router (`/config`, `/reconnect`): `Esc` cancels the wizard and returns to the running screen. This requires `WizardState::cancelable = true`.
+- First-run wizard (no config): `Esc` on `AgentSelect` / `TransportPick` is a no-op (the user must configure before Aptove Router can start).
 - Wizard sub-steps (`AgentCustomInput`): `Esc` goes back one step (to `AgentSelect`).
 - `PushSetup`: `Esc` skips push setup and advances the wizard.
 - Enterprise wizard steps: `Esc` goes back to `TransportPick`.
@@ -125,7 +125,7 @@ The hint text shown at the bottom of each wizard panel must include `Esc cancel`
 
 ### First-Run and Missing-Config Wizard
 
-Every time Aptove CLI starts, `WizardState::compute()` checks `CommonConfig` for missing or incomplete configuration and runs the relevant setup screen **before** launching Aptove CLI. The checks in order are:
+Every time Aptove Router starts, `WizardState::compute()` checks `CommonConfig` for missing or incomplete configuration and runs the relevant setup screen **before** launching Aptove Router. The checks in order are:
 
 1. `agent_command` missing → `AgentSelect` screen
 2. 0 enabled transports → `TransportPick` screen (user must choose a transport)
@@ -135,7 +135,7 @@ Every time Aptove CLI starts, `WizardState::compute()` checks `CommonConfig` for
 
 **`CommonConfig::default()` must NOT pre-enable any transport.** The transport map starts empty so that a brand-new installation always shows the transport picker. Existing configs loaded from `common.toml` are unaffected.
 
-After any wizard completion (`finish_wizard()`), the QR pairing popup is opened automatically as soon as Aptove CLI reports `PairingUrlReady`. This lets the user pair their mobile client immediately without typing `/qr`.
+After any wizard completion (`finish_wizard()`), the QR pairing popup is opened automatically as soon as Aptove Router reports `PairingUrlReady`. This lets the user pair their mobile client immediately without typing `/qr`.
 
 ---
 
