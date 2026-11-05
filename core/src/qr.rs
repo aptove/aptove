@@ -178,11 +178,11 @@ pub fn display_qr_code(connection_json: &str, transport: &str) -> Result<()> {
             println!("  Client ID:       {}", client_id);
         }
     }
-    if let Some(client_secret) = json_value.get("clientSecret").and_then(|v| v.as_str()) {
-        println!("  Client Secret:   {}... (hidden)", &client_secret[..4.min(client_secret.len())]);
+    if json_value.get("clientSecret").and_then(|v| v.as_str()).is_some() {
+        println!("  Client Secret:   (set)");
     }
-    if let Some(auth_token) = json_value.get("authToken").and_then(|v| v.as_str()) {
-        println!("  Auth Token:      {}... (hidden)", &auth_token[..4.min(auth_token.len())]);
+    if json_value.get("authToken").and_then(|v| v.as_str()).is_some() {
+        println!("  Auth Token:      (set)");
     }
     if let Some(fingerprint) = json_value.get("certFingerprint").and_then(|v| v.as_str()) {
         if fingerprint.len() > 16 {
