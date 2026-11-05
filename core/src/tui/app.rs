@@ -227,6 +227,25 @@ impl App {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
+        // Spawn keyboard thread AFTER raw mode is enabled — crossterm::event::read()
+        // queries cursor position internally, which fails and corrupts the terminal
+        // if raw mode isn't active yet.
+        let key_tx = self.event_tx.clone();
+        std::thread::spawn(move || loop {
+            match crossterm::event::read() {
+                Ok(crossterm::event::Event::Key(key)) => {
+                    if key_tx.blocking_send(AppEvent::Key(key)).is_err() { break; }
+                }
+                Ok(crossterm::event::Event::Mouse(mouse)) => {
+                    let _ = key_tx.blocking_send(AppEvent::Mouse(mouse));
+                }
+                Ok(crossterm::event::Event::Resize(w, h)) => {
+                    let _ = key_tx.blocking_send(AppEvent::Resize(w, h));
+                }
+                _ => {}
+            }
+        });
+
         // Clear any previous terminal content so it doesn't bleed through.
         terminal.clear()?;
 

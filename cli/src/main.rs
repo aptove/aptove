@@ -50,22 +50,6 @@ async fn run_tui() -> Result<()> {
         }
     });
 
-    let key_tx = event_tx.clone();
-    std::thread::spawn(move || loop {
-        match crossterm::event::read() {
-            Ok(crossterm::event::Event::Key(key)) => {
-                if key_tx.blocking_send(AppEvent::Key(key)).is_err() { break; }
-            }
-            Ok(crossterm::event::Event::Mouse(mouse)) => {
-                let _ = key_tx.blocking_send(AppEvent::Mouse(mouse));
-            }
-            Ok(crossterm::event::Event::Resize(w, h)) => {
-                let _ = key_tx.blocking_send(AppEvent::Resize(w, h));
-            }
-            _ => {}
-        }
-    });
-
     let app = App::new(config, event_tx, log_level_arc);
     app.run(event_rx).await
 }
