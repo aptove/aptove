@@ -19,4 +19,4 @@ tokio = { version = "1.35", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 anyhow = "1.0"
 local-ip-address = "0.6"
-crossterm = "0.28"
+crossterm = "0.29"
