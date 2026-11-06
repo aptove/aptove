@@ -91,7 +91,14 @@ impl TransportPlugin for TailscaleTransportPlugin {
             .ok_or_else(|| anyhow::anyhow!(
                 "tailscale-serve requires MagicDNS + HTTPS enabled on your tailnet"
             ))?;
-        let hostname = format!("wss://{}", ts_hostname);
+        // Use first 8 chars of agent_id as a unique path prefix so multiple
+        // Aptove instances on the same machine each get their own route.
+        let path_prefix = if common.agent_id.len() >= 8 {
+            &common.agent_id[..8]
+        } else {
+            &common.agent_id
+        };
+        let hostname = format!("wss://{}/{}", ts_hostname, path_prefix);
         let pm = PairingManager::new_with_cf(
             common.agent_id.clone(),
             hostname.clone(),
@@ -99,7 +106,7 @@ impl TransportPlugin for TailscaleTransportPlugin {
             None, None, None,
             cwd.to_string(),
         ).with_tailscale_path();
-        let guard = tailscale_serve_start(port)?;
+        let guard = tailscale_serve_start(port, path_prefix)?;
         Ok(TransportHandle {
             hostname,
             pairing_manager: pm,

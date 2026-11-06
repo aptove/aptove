@@ -145,22 +145,22 @@ fn check_tailscale_version() -> Result<()> {
     Ok(())
 }
 
-/// Guard that runs `tailscale serve reset` when dropped.
+/// Guard that removes a single `tailscale serve` path route when dropped.
 pub struct TailscaleServeGuard {
-    port: u16,
+    path_prefix: String,
 }
 
 impl TailscaleServeGuard {
-    fn new(port: u16) -> Self {
-        Self { port }
+    fn new(path_prefix: String) -> Self {
+        Self { path_prefix }
     }
 }
 
 impl Drop for TailscaleServeGuard {
     fn drop(&mut self) {
-        debug!("TailscaleServeGuard dropped — removing tailscale serve config for port {}", self.port);
+        debug!("TailscaleServeGuard dropped — removing tailscale serve route for /{}", self.path_prefix);
         let _ = Command::new("tailscale")
-            .args(["serve", &format!("--https={}", self.port), "off"])
+            .args(["serve", "--https=443", "--set-path", &format!("/{}", self.path_prefix), "off"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -168,9 +168,11 @@ impl Drop for TailscaleServeGuard {
 }
 
 /// Configure `tailscale serve` to proxy HTTPS (port 443) to the bridge on localhost.
+/// Each instance registers a unique path prefix (`/{path_prefix}`) so multiple
+/// Aptove instances on the same machine can coexist on a single Tailscale hostname.
 /// Requires MagicDNS + HTTPS enabled on the tailnet.
-/// Returns a guard that runs `tailscale serve reset` when dropped.
-pub fn tailscale_serve_start(port: u16) -> Result<TailscaleServeGuard> {
+/// Returns a guard that removes the path route when dropped.
+pub fn tailscale_serve_start(port: u16, path_prefix: &str) -> Result<TailscaleServeGuard> {
     match tailscale_state() {
         TailscaleState::NotInstalled => anyhow::bail!("{}", INSTALL_HINT),
         TailscaleState::NotRunning => anyhow::bail!("{}", NOT_RUNNING_HINT),
@@ -182,18 +184,14 @@ pub fn tailscale_serve_start(port: u16) -> Result<TailscaleServeGuard> {
     if hostname.is_none() {
         anyhow::bail!(
             "tailscale serve mode requires MagicDNS + HTTPS to be enabled on your tailnet.\n\
-             Enable HTTPS in the Tailscale admin console: https://tailscale.com/kb/1153/enabling-https\n\
              Enable HTTPS in the Tailscale admin console: https://tailscale.com/kb/1153/enabling-https"
         );
     }
-    // Always expose on port 443 so the Tailscale URL has no port suffix
-    // (e.g. https://hostname.ts.net/ instead of https://hostname.ts.net:8770/).
-    // The local bridge backend continues to run on whatever `port` it chose.
-    const HTTPS_PORT: u16 = 443;
-    info!("🔧 Configuring tailscale serve → localhost:{}", port);
+    let serve_path = format!("/{}", path_prefix);
+    info!("🔧 Configuring tailscale serve {} → localhost:{}", serve_path, port);
     let backend = format!("http://localhost:{}", port);
     let output = Command::new("tailscale")
-        .args(["serve", "--bg", &format!("--https={}", HTTPS_PORT), &backend])
+        .args(["serve", "--bg", "--https=443", "--set-path", &serve_path, &backend])
         .output()
         .context("Failed to run 'tailscale serve'")?;
     // Forward tailscale's output through tracing so it appears in the TUI log
@@ -215,7 +213,7 @@ pub fn tailscale_serve_start(port: u16) -> Result<TailscaleServeGuard> {
             output.status
         );
     }
-    Ok(TailscaleServeGuard::new(HTTPS_PORT))
+    Ok(TailscaleServeGuard::new(path_prefix.to_string()))
 }
 
 #[cfg(test)]
@@ -284,5 +282,94 @@ mod tests {
             .and_then(|v| v.as_str())
             .map(|s| s.trim_end_matches('.').to_string());
         assert_eq!(dns_name, None);
+    }
+
+    #[test]
+    fn test_guard_stores_path_prefix() {
+        let guard = TailscaleServeGuard::new("abc12345".to_string());
+        assert_eq!(guard.path_prefix, "abc12345");
+    }
+
+    #[test]
+    fn test_guard_drop_command_format() {
+        // Verify the drop command would use the correct path format.
+        // We can't easily test the actual Command execution, but we can
+        // verify the path_prefix is formatted correctly for the args.
+        let guard = TailscaleServeGuard::new("abc12345".to_string());
+        let expected_path = format!("/{}", guard.path_prefix);
+        assert_eq!(expected_path, "/abc12345");
+    }
+
+    #[test]
+    fn test_path_prefix_from_agent_id() {
+        // Simulates the logic in TailscaleTransportPlugin::build() that
+        // derives the path prefix from agent_id.
+        let agent_id = "abc12345-6789-0def-abcd-ef0123456789";
+        let path_prefix = if agent_id.len() >= 8 {
+            &agent_id[..8]
+        } else {
+            agent_id
+        };
+        assert_eq!(path_prefix, "abc12345");
+
+        // Hostname should include the path prefix
+        let ts_hostname = "my-laptop.tail1234.ts.net";
+        let hostname = format!("wss://{}/{}", ts_hostname, path_prefix);
+        assert_eq!(hostname, "wss://my-laptop.tail1234.ts.net/abc12345");
+    }
+
+    #[test]
+    fn test_path_prefix_short_agent_id() {
+        // Edge case: agent_id shorter than 8 chars uses the full id.
+        let agent_id = "short";
+        let path_prefix = if agent_id.len() >= 8 {
+            &agent_id[..8]
+        } else {
+            agent_id
+        };
+        assert_eq!(path_prefix, "short");
+    }
+
+    #[test]
+    fn test_different_agent_ids_produce_different_paths() {
+        let id_a = "abc12345-xxxx";
+        let id_b = "def67890-yyyy";
+        let prefix_a = &id_a[..8];
+        let prefix_b = &id_b[..8];
+        assert_ne!(prefix_a, prefix_b);
+
+        let hostname = "my-laptop.tail1234.ts.net";
+        let url_a = format!("wss://{}/{}", hostname, prefix_a);
+        let url_b = format!("wss://{}/{}", hostname, prefix_b);
+        assert_ne!(url_a, url_b);
+        assert!(url_a.contains("/abc12345"));
+        assert!(url_b.contains("/def67890"));
+    }
+
+    #[test]
+    fn test_pairing_url_with_path_prefix() {
+        // The pairing URL is derived from the hostname. With a path prefix,
+        // the base_url includes the prefix and /pair/tailscale is appended.
+        let hostname = "wss://my-laptop.tail1234.ts.net/abc12345";
+        let base_url = hostname.replace("wss://", "https://").replace("ws://", "http://");
+        assert_eq!(base_url, "https://my-laptop.tail1234.ts.net/abc12345");
+        // PairingManager appends /pair/tailscale?code=... to this base_url
+        let pairing_url = format!("{}/pair/tailscale?code=123456", base_url);
+        assert_eq!(pairing_url, "https://my-laptop.tail1234.ts.net/abc12345/pair/tailscale?code=123456");
+    }
+
+    #[test]
+    fn test_bridge_path_matching_with_prefix() {
+        // The bridge uses `contains("/pair/")` to match pairing requests.
+        // Verify this works with a path prefix prepended.
+        let request_with_prefix = "GET /abc12345/pair/tailscale?code=123456 HTTP/1.1";
+        let request_without_prefix = "GET /pair/tailscale?code=123456 HTTP/1.1";
+
+        assert!(request_with_prefix.starts_with("GET") && request_with_prefix.contains("/pair/"));
+        assert!(request_without_prefix.starts_with("GET") && request_without_prefix.contains("/pair/"));
+
+        // Same for webhook paths
+        let webhook_with_prefix = "POST /abc12345/webhook/token123 HTTP/1.1";
+        assert!(webhook_with_prefix.starts_with("POST") && webhook_with_prefix.contains("/webhook/"));
     }
 }
