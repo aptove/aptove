@@ -246,8 +246,10 @@ impl App {
             }
         });
 
-        // Clear any previous terminal content so it doesn't bleed through.
-        terminal.clear()?;
+        // EnterAlternateScreen already provides a blank canvas, and the first
+        // terminal.draw() paints the full viewport. Calling terminal.clear() is
+        // unnecessary and in ratatui 0.30 it triggers a cursor::position() query
+        // that can fail on some terminals with "cursor position could not be read".
 
         // If no wizard needed, start bridge immediately.
         if self.screen == Screen::Running {
