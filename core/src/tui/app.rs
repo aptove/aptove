@@ -105,8 +105,10 @@ pub struct App {
     // Terminal size — updated each frame; used for popup URL hit-testing.
     term_area: Rect,
 
-    // When true, call terminal.clear() before the next draw to flush
-    // artifacts left by dismissed wizards or popups.
+    // When true, render a full-screen Clear widget before the next draw
+    // to flush artifacts left by dismissed wizards or popups.
+    // NOTE: We avoid terminal.clear() because ratatui 0.30 calls
+    // get_cursor_position() internally, which fails on some terminals.
     needs_clear: bool,
 
     // Countdown ticks for the "Copied!" indicator in the log panel (200ms per tick).
@@ -284,7 +286,13 @@ impl App {
             }
             if self.needs_clear {
                 self.needs_clear = false;
-                terminal.clear()?;
+                // Instead of terminal.clear() (which calls get_cursor_position()
+                // in ratatui 0.30 and crashes on some terminals), we render a
+                // full-screen Clear widget in the next draw call. The draw loop
+                // already paints the full viewport, so this is sufficient.
+                terminal.draw(|frame| {
+                    frame.render_widget(Clear, frame.area());
+                })?;
             }
             terminal.draw(|frame| {
                 match self.screen {
