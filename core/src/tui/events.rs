@@ -44,6 +44,8 @@ pub enum AppEvent {
     PluginSetupResult { transport_name: String, result: Result<TransportConfig, String> },
     /// Result of an async test-push triggered from the running screen.
     TestPushResult(Result<bool, String>),
+    /// Fired after a delay to trigger an automatic transport retry.
+    RetryBridge,
 }
 
 /// Commands sent from the TUI to the bridge runner.

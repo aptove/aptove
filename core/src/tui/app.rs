@@ -38,6 +38,7 @@ use crate::tui::{
 use crate::runner::run_bridge;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const RETRY_INTERVAL_SECS: u64 = 10;
 
 /// All slash commands with their one-line descriptions.
 const COMMANDS: &[(&str, &str)] = &[
@@ -141,6 +142,10 @@ pub struct App {
     // Set when the bridge exits with an error; cleared when a new bridge starts.
     // Used to show an error popup instead of the QR code when the transport is down.
     bridge_error: Option<String>,
+
+    // Auto-retry transport build failures every RETRY_INTERVAL_SECS.
+    auto_retry: bool,
+    retry_count: u32,
 }
 
 impl App {
@@ -218,6 +223,8 @@ impl App {
             pairing_received_at: None,
             qr_visible: Arc::new(AtomicBool::new(false)),
             bridge_error: None,
+            auto_retry: true,
+            retry_count: 0,
         }
     }
 
@@ -436,6 +443,11 @@ impl App {
                         self.push_status = PushStatus::Error;
                         self.log_push_warn(format!("Push configuration saved, but test notification failed: {}", e));
                     }
+                }
+            }
+            AppEvent::RetryBridge => {
+                if self.bridge_shutdown.is_none() && self.auto_retry && self.wizard.is_none() && !self.quit {
+                    self.start_bridge();
                 }
             }
         }
@@ -728,6 +740,9 @@ impl App {
         self.needs_clear = true;
         // Auto-show QR when the bridge comes up so the user can pair immediately.
         self.show_qr_on_ready = true;
+        // Re-enable auto-retry for the new transport configuration.
+        self.auto_retry = true;
+        self.retry_count = 0;
 
         if let Some(tx) = self.bridge_shutdown.take() {
             // Bridge is currently running — stop it and wait for BridgeStopped
@@ -1087,11 +1102,13 @@ impl App {
             }
             "/quit" | "/exit" => {
                 self.quit = true;
+                self.auto_retry = false;
             }
             "/transport" => {
                 // Show transport picker; the running bridge stays up until the
                 // user confirms a transport, then finish_wizard() stops the old
                 // bridge and waits for BridgeStopped before starting the new one.
+                self.auto_retry = false;
                 let active = self.selected_transport.as_deref();
                 let reconnect_wizard = WizardState::for_reconnect(&self.config, active);
                 self.wizard = Some(reconnect_wizard);
@@ -1422,6 +1439,18 @@ impl App {
                 self.transport_addr = addr.clone();
                 self.transport_up = true;
                 self.log_push(format!("Transport up: {} — {}", name, addr));
+                // Clear transport error state and dismiss error popup on successful connect.
+                if self.bridge_error.is_some() {
+                    self.bridge_error = None;
+                    if matches!(self.popup, Some(PopupKind::TransportError)) {
+                        self.popup = None;
+                        self.needs_clear = true;
+                    }
+                }
+                if self.retry_count > 0 {
+                    self.log_push(format!("Transport available after {} retries.", self.retry_count));
+                }
+                self.retry_count = 0;
             }
             BridgeEvent::TransportDown { name } => {
                 self.transport_up = false;
@@ -1499,7 +1528,21 @@ impl App {
                 // fully releases its lock, do it now.
                 if self.restart_pending && self.wizard.is_none() {
                     self.restart_pending = false;
+                    self.retry_count = 0;
                     self.start_bridge();
+                } else if self.auto_retry && self.bridge_error.is_some() && self.wizard.is_none() && !self.quit {
+                    if self.retry_count == 0 {
+                        self.log_push_warn(format!(
+                            "Transport unavailable — retrying every {}s...",
+                            RETRY_INTERVAL_SECS
+                        ));
+                    }
+                    self.retry_count += 1;
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(RETRY_INTERVAL_SECS)).await;
+                        let _ = tx.send(AppEvent::RetryBridge).await;
+                    });
                 }
             }
             BridgeEvent::BridgeError { message } => {

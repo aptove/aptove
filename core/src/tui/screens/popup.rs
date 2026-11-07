@@ -326,8 +326,8 @@ fn render_transport_error_popup(frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(
             "The transport is not running.\n\n\
-             Fix the error shown in the logs,\n\
-             then use /qr once Aptove is up."
+             Aptove is retrying automatically.\n\
+             Use /transport to change transports."
         )
         .style(Style::default().fg(Color::Yellow))
         .wrap(Wrap { trim: false }),
