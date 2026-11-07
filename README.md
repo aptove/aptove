@@ -8,8 +8,6 @@
 
 Aptove is a stand-alone CLI app to connect any AI Agents that support Agent Client Protocol (ACP) with the Aptove Mobile App to seamlessly manage the AI agents running in a server or computer.
 
-Aptove is actively developed and we are still experimenting. Until the first stable version, expect breaking changes in the configuration files and how it works.
-
 ## Transport Modes
 
 | Mode | Use Case | Documentation |
