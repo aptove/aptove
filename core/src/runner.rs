@@ -78,6 +78,17 @@ pub async fn run_bridge(
         .to_string_lossy()
         .to_string();
 
+    // Derive a default agent_name from the working directory folder name and persist it.
+    if config.agent_name.is_none() {
+        let folder = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "Agent".to_string());
+        config.agent_name = Some(folder);
+        let _ = config.save();
+    }
+    let agent_name = config.agent_name.clone().unwrap_or_else(|| "Agent".to_string());
+
     let mut transport_cfg = config.transports.get(&transport_name)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Transport '{}' not found in config", transport_name))?;
@@ -186,7 +197,9 @@ pub async fn run_bridge(
         .with_bind_addr(bind_address)
         .with_auth_token(Some(config.auth_token.clone()))
         .with_pairing(Arc::clone(&pm))
-        .with_bridge_agent_id(config.agent_id.clone());
+        .with_bridge_agent_id(config.agent_id.clone())
+        .with_agent_name(agent_name.clone())
+        .with_config_dir(config_dir.clone());
 
     if let Some(tls) = tls_config {
         bridge = bridge.with_tls(tls);
@@ -195,7 +208,8 @@ pub async fn run_bridge(
     }
 
     let mut pool_builder = AgentPool::new(PoolConfig::default())
-        .with_working_dir(cwd.clone().into());
+        .with_working_dir(cwd.clone().into())
+        .with_configured_agent_name(agent_name.clone());
     if let Some(ref relay) = push_relay_arc {
         pool_builder = pool_builder.with_push_relay(std::sync::Arc::clone(relay));
 

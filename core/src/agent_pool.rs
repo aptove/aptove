@@ -102,6 +102,9 @@ pub struct AgentPool {
     /// Forwards push delivery results (true = delivered, false = failed) to the TUI.
     push_result_tx: Option<mpsc::Sender<bool>>,
     working_dir: PathBuf,
+    /// User-configured name for this agent instance. When set, overrides the name
+    /// extracted from the ACP `initialize` response for push notification titles.
+    configured_agent_name: Option<String>,
 }
 
 impl AgentPool {
@@ -112,6 +115,7 @@ impl AgentPool {
             push_relay: None,
             push_result_tx: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            configured_agent_name: None,
         }
     }
 
@@ -132,6 +136,24 @@ impl AgentPool {
     pub fn with_push_result_sender(mut self, tx: mpsc::Sender<bool>) -> Self {
         self.push_result_tx = Some(tx);
         self
+    }
+
+    /// Set the user-configured agent name. When set, this name takes priority over
+    /// the name extracted from the ACP `initialize` response for push notifications.
+    pub fn with_configured_agent_name(mut self, name: String) -> Self {
+        self.configured_agent_name = Some(name);
+        self
+    }
+
+    /// Update the configured agent name at runtime (called when `bridge/setAgentName` is received).
+    /// Updates all existing agents' name arcs so push notifications use the new name immediately.
+    pub fn set_configured_agent_name(&mut self, name: String) {
+        self.configured_agent_name = Some(name.clone());
+        for agent in self.agents.values() {
+            let arc = Arc::clone(&agent.agent_name);
+            let n = name.clone();
+            tokio::spawn(async move { *arc.write().await = n; });
+        }
     }
 
     /// Get an existing agent or spawn a new one for the given token.
@@ -269,7 +291,8 @@ impl AgentPool {
         let stdout_reader = BufReader::new(stdout);
         let push_relay_for_stdout: Option<Arc<PushRelayClient>> = self.push_relay.clone();
         let push_result_tx_for_stdout: Option<mpsc::Sender<bool>> = self.push_result_tx.clone();
-        let agent_name_shared = Arc::new(tokio::sync::RwLock::new("Agent".to_string()));
+        let initial_name = self.configured_agent_name.clone().unwrap_or_else(|| "Agent".to_string());
+        let agent_name_shared = Arc::new(tokio::sync::RwLock::new(initial_name));
         let agent_name_for_stdout = Arc::clone(&agent_name_shared);
         let overflow_buffer = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
         let overflow_for_stdout = Arc::clone(&overflow_buffer);
@@ -379,17 +402,19 @@ impl AgentPool {
     pub fn cache_init_response(&mut self, token: &str, response: String) {
         if let Some(agent) = self.agents.get_mut(token) {
             info!("Cached initialize response for agent (keep-alive)");
-            // Extract agent name from agentInfo.name or serverInfo.name
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&response) {
-                let name = v["result"]["agentInfo"]["name"].as_str()
-                    .or_else(|| v["result"]["serverInfo"]["name"].as_str());
-                if let Some(name) = name {
-                    let agent_name = Arc::clone(&agent.agent_name);
-                    let name_owned = name.to_string();
-                    tokio::spawn(async move {
-                        *agent_name.write().await = name_owned;
-                    });
-                    info!("Agent name set to '{}'", name);
+            // Only update name from ACP response when the user hasn't configured a custom name.
+            if self.configured_agent_name.is_none() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&response) {
+                    let name = v["result"]["agentInfo"]["name"].as_str()
+                        .or_else(|| v["result"]["serverInfo"]["name"].as_str());
+                    if let Some(name) = name {
+                        let agent_name = Arc::clone(&agent.agent_name);
+                        let name_owned = name.to_string();
+                        tokio::spawn(async move {
+                            *agent_name.write().await = name_owned;
+                        });
+                        info!("Agent name set to '{}' (from ACP initialize)", name);
+                    }
                 }
             }
             agent.cached_init_response = Some(response);

@@ -123,6 +123,11 @@ pub struct StdioBridge {
     /// Sent to every connected client as the first `bridge/identify` notification
     /// so the mobile app can verify it connected to the expected bridge.
     bridge_agent_id: String,
+    /// User-visible name for this agent instance, included in `bridge/identify` and
+    /// used as the push notification title.
+    agent_name: String,
+    /// Config directory for persisting name changes received via `bridge/setAgentName`.
+    config_dir: Option<PathBuf>,
 }
 
 impl StdioBridge {
@@ -146,6 +151,8 @@ impl StdioBridge {
             memory_max_bytes: 1024 * 1024,       // 1 MB default
             ws_max_message_bytes: 50 * 1024 * 1024, // 50 MB default
             bridge_agent_id: String::new(),
+            agent_name: String::new(),
+            config_dir: None,
         }
     }
 
@@ -172,6 +179,18 @@ impl StdioBridge {
     /// the mobile app can verify it connected to the expected bridge.
     pub fn with_bridge_agent_id(mut self, id: String) -> Self {
         self.bridge_agent_id = id;
+        self
+    }
+
+    /// Set the user-visible agent name included in `bridge/identify` params.
+    pub fn with_agent_name(mut self, name: String) -> Self {
+        self.agent_name = name;
+        self
+    }
+
+    /// Set the config directory for persisting name changes from `bridge/setAgentName`.
+    pub fn with_config_dir(mut self, dir: PathBuf) -> Self {
+        self.config_dir = Some(dir);
         self
     }
 
@@ -326,6 +345,8 @@ impl StdioBridge {
                     let memory_max_bytes = self.memory_max_bytes;
                     let ws_max_message_bytes = self.ws_max_message_bytes;
                     let bridge_agent_id = self.bridge_agent_id.clone();
+                    let agent_name = self.agent_name.clone();
+                    let config_dir = self.config_dir.clone();
 
                     tokio::spawn(async move {
                         // Register connection
@@ -335,7 +356,7 @@ impl StdioBridge {
                             // TLS connection
                             match tls.acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id).await
+                                    handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
                                 }
                                 Err(e) => {
                                     warn!("🚫 TLS handshake failed: {}", e);
@@ -344,7 +365,7 @@ impl StdioBridge {
                             }
                         } else {
                             // Plain TCP connection
-                            handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id).await
+                            handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
                         };
 
                         // Always remove connection when done
@@ -384,6 +405,8 @@ async fn handle_connection_generic<S>(
     memory_max_bytes: u64,
     ws_max_message_bytes: usize,
     bridge_agent_id: String,
+    agent_name: String,
+    config_dir: Option<PathBuf>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -438,7 +461,7 @@ where
     let prefixed_stream = PrefixedStream::new(request_bytes, stream);
     
     // Continue with WebSocket handling
-    handle_websocket_connection(prefixed_stream, agent_handle, auth_token, agent_pool, push_relay, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id).await
+    handle_websocket_connection(prefixed_stream, agent_handle, auth_token, agent_pool, push_relay, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
 }
 
 /// Handle a pairing request - validate the code and return connection details
@@ -853,7 +876,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 }
 
 /// Handle WebSocket connection after initial HTTP parsing
-async fn handle_websocket_connection<S>(stream: S, agent_handle: AgentHandle, auth_token: Arc<Option<String>>, agent_pool: Option<Arc<tokio::sync::RwLock<AgentPool>>>, push_relay: Option<Arc<PushRelayClient>>, working_dir: PathBuf, slash_commands: Arc<Vec<SlashCommandConfig>>, memory_path: Option<PathBuf>, memory_max_bytes: u64, ws_max_message_bytes: usize, bridge_agent_id: String) -> Result<()>
+async fn handle_websocket_connection<S>(stream: S, agent_handle: AgentHandle, auth_token: Arc<Option<String>>, agent_pool: Option<Arc<tokio::sync::RwLock<AgentPool>>>, push_relay: Option<Arc<PushRelayClient>>, working_dir: PathBuf, slash_commands: Arc<Vec<SlashCommandConfig>>, memory_path: Option<PathBuf>, memory_max_bytes: u64, ws_max_message_bytes: usize, bridge_agent_id: String, agent_name: String, config_dir: Option<PathBuf>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -953,7 +976,7 @@ where
             handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
         } else {
             if let AgentHandle::Command(ref cmd) = agent_handle {
-                handle_websocket_pooled(ws_stream, cmd.clone(), client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id).await
+                handle_websocket_pooled(ws_stream, cmd.clone(), client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id, agent_name, config_dir).await
             } else {
                 // InProcess handles don't support pooling yet; fall back to per-connection
                 handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
@@ -974,6 +997,7 @@ async fn bridge_handshake<S>(
     ws_sender: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<S>, Message>,
     bridge_agent_id: &str,
     working_dir: &std::path::Path,
+    agent_name: &str,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -983,7 +1007,8 @@ where
         "method": "bridge/identify",
         "params": {
             "bridgeAgentId": bridge_agent_id,
-            "cwd": working_dir.to_string_lossy()
+            "cwd": working_dir.to_string_lossy(),
+            "agentName": agent_name
         }
     });
     ws_sender.send(Message::Text(serde_json::to_string(&msg)?.into())).await
@@ -1004,6 +1029,8 @@ async fn handle_websocket_pooled<S>(
     memory_path: Option<PathBuf>,
     memory_max_bytes: u64,
     bridge_agent_id: String,
+    agent_name: String,
+    config_dir: Option<PathBuf>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1013,7 +1040,7 @@ where
     // Bridge protocol handshake — must be the very first message sent to the client,
     // before any ACP exchange. The mobile app validates bridgeAgentId here and
     // disconnects immediately if it doesn't match the expected bridge.
-    bridge_handshake(&mut ws_sender, &bridge_agent_id, &working_dir).await?;
+    bridge_handshake(&mut ws_sender, &bridge_agent_id, &working_dir, &agent_name).await?;
 
     // Get or spawn agent from pool
     let (ws_to_agent_tx, mut agent_to_ws_rx, buffered, was_reused, cached_init, cached_session, broadcast_tx) = {
@@ -1159,6 +1186,8 @@ where
     let current_session_id_task1 = Arc::clone(&current_session_id);
     let suppress_response_id_task1 = Arc::clone(&suppress_response_id);
     let bridge_agent_id_task1 = bridge_agent_id.clone();
+    let pool_for_set_name = Arc::clone(&pool);
+    let config_dir_for_task1 = config_dir.clone();
     let mut ws_to_agent = tokio::spawn(async move {
         // True once memory has been prepended to the first session/prompt of this connection.
         // Pre-set to true for reused agents resuming an existing session (session/load) since
@@ -1212,6 +1241,23 @@ where
                                             }
                                         });
                                     }
+                                }
+                                continue; // Always skip — never forward to agent
+                            }
+                            if method == Some("bridge/setAgentName") {
+                                if let Some(name) = v.pointer("/params/name").and_then(|n| n.as_str()) {
+                                    let name = name.to_string();
+                                    {
+                                        let mut pool = pool_for_set_name.write().await;
+                                        pool.set_configured_agent_name(name.clone());
+                                    }
+                                    if let Some(ref dir) = config_dir_for_task1 {
+                                        if let Ok(mut cfg) = crate::common_config::CommonConfig::load_from_dir(dir) {
+                                            cfg.agent_name = Some(name.clone());
+                                            let _ = cfg.save_to_dir(dir);
+                                        }
+                                    }
+                                    info!("Agent name updated to '{}'", name);
                                 }
                                 continue; // Always skip — never forward to agent
                             }

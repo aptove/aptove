@@ -164,6 +164,12 @@ pub struct CommonConfig {
     /// startups to skip the transport chooser when the selection is still valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_transport: Option<String>,
+
+    /// User-visible name for this agent instance, shown in push notification titles.
+    /// Defaults to the folder name where aptove is started. Can be updated by the
+    /// mobile app via `bridge/setAgentName`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
 }
 
 fn keep_alive_default() -> bool { true }
@@ -219,6 +225,7 @@ impl Default for CommonConfig {
             memory_max_kb: 1024,
             ws_max_message_mb: 50,
             last_transport: None,
+            agent_name: None,
         }
     }
 }
