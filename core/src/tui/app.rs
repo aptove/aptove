@@ -131,6 +131,11 @@ pub struct App {
     // Set after any wizard completion so the user can pair immediately.
     show_qr_on_ready: bool,
 
+    // When true, finish_wizard() will NOT auto-open the QR popup.
+    // Set for /agent changes: only the subprocess is restarted; the
+    // pairing URL is unchanged so paired devices reconnect without re-pairing.
+    agent_only_restart: bool,
+
     // When the current pairing code was issued — used to show the countdown
     // in the QR popup and detect when auto-renew has fired.
     pairing_received_at: Option<std::time::Instant>,
@@ -220,6 +225,7 @@ impl App {
             drag_start_idx: None,
             restart_pending: false,
             show_qr_on_ready: false,
+            agent_only_restart: false,
             pairing_received_at: None,
             qr_visible: Arc::new(AtomicBool::new(false)),
             bridge_error: None,
@@ -510,6 +516,7 @@ impl App {
                 self.wizard = None;
                 self.screen = Screen::Running;
                 self.needs_clear = true;
+                self.agent_only_restart = false;
             }
             _ => {}
         }
@@ -738,8 +745,10 @@ impl App {
         self.wizard = None;
         self.screen = Screen::Running;
         self.needs_clear = true;
-        // Auto-show QR when the bridge comes up so the user can pair immediately.
-        self.show_qr_on_ready = true;
+        // Auto-show QR when the bridge comes up — except for agent-only restarts
+        // where the pairing URL is unchanged and re-pairing is not needed.
+        self.show_qr_on_ready = !self.agent_only_restart;
+        self.agent_only_restart = false;
         // Re-enable auto-retry for the new transport configuration.
         self.auto_retry = true;
         self.retry_count = 0;
@@ -1132,6 +1141,9 @@ impl App {
             "/agent" => {
                 // Open Configure Agent with the current command pre-filled.
                 let current = self.config.agent_command.clone().unwrap_or_default();
+                // Suppress QR auto-open: only the agent subprocess is restarted;
+                // the pairing URL is unchanged so paired clients reconnect on their own.
+                self.agent_only_restart = true;
                 self.wizard = Some(WizardState {
                     step: WizardStep::ConfigureAgent { input: current },
                     reconnect_mode: false,
