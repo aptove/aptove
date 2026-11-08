@@ -307,6 +307,13 @@ pub async fn run_bridge(
 
     // Signal the renewal task to stop.
     let _ = cancel_tx.send(());
+    // Drop the transport guard (e.g. TailscaleServeGuard) BEFORE sending
+    // BridgeStopped.  BridgeStopped triggers an immediate restart in the TUI,
+    // which spawns a new run_bridge() that re-registers the tailscale serve
+    // route.  If the guard were dropped after BridgeStopped (at function
+    // return), the new bridge would register the route first and the old
+    // guard's drop would then remove it — leaving the route gone on restart.
+    drop(_guard);
     drop(_bridge_lock);
     let _ = event_tx.send(AppEvent::Bridge(BridgeEvent::BridgeStopped)).await;
     result

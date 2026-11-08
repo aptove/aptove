@@ -1820,7 +1820,6 @@ fn extract_session_id_from_response(response: &str) -> Option<String> {
         })
 }
 
-/// Build a `session/update` JSON-RPC notification carrying `available_commands_update`.
 ///
 /// The serialisation follows the ACP schema:
 /// - `SessionUpdate` is tagged with `"sessionUpdate": "available_commands_update"`
