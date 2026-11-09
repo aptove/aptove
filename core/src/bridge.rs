@@ -1188,6 +1188,7 @@ where
     let bridge_agent_id_task1 = bridge_agent_id.clone();
     let pool_for_set_name = Arc::clone(&pool);
     let config_dir_for_task1 = config_dir.clone();
+    let working_dir_for_task1 = working_dir.clone();
     let mut ws_to_agent = tokio::spawn(async move {
         // True once memory has been prepended to the first session/prompt of this connection.
         // Pre-set to true for reused agents resuming an existing session (session/load) since
@@ -1260,6 +1261,24 @@ where
                                     info!("Agent name updated to '{}'", name);
                                 }
                                 continue; // Always skip — never forward to agent
+                            }
+                            if method == Some("bridge/files/list") {
+                                let path = v.pointer("/params/path")
+                                    .and_then(|p| p.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let result = files_list_response(&working_dir_for_task1, &path).await;
+                                let _ = inject_tx.send(result).await;
+                                continue;
+                            }
+                            if method == Some("bridge/files/content") {
+                                let path = v.pointer("/params/path")
+                                    .and_then(|p| p.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let result = files_content_response(&working_dir_for_task1, &path).await;
+                                let _ = inject_tx.send(result).await;
+                                continue;
                             }
                         }
 
@@ -2318,7 +2337,7 @@ where
 
     // Wait for any task to complete (which signals shutdown)
     shutdown_rx.recv().await;
-    
+
     info!("🔌 Connection closing, cleaning up...");
 
     // Abort all tasks
@@ -2328,4 +2347,279 @@ where
     process_monitor.abort();
 
     Ok(())
+}
+
+// ─── Computer File Browser Helpers ───────────────────────────────────────────
+
+/// Resolve a client-supplied relative path to an absolute path, verifying
+/// it stays within `working_dir`. Returns `None` if the path is forbidden
+/// (contains `..`, resolves outside the sandbox, or canonicalization fails).
+fn resolve_safe_path(working_dir: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    if relative.contains("..") {
+        return None;
+    }
+    let joined = working_dir.join(relative.trim_start_matches('/'));
+    let canonical = joined.canonicalize().ok()?;
+    let base = working_dir.canonicalize().ok()?;
+    if canonical.starts_with(&base) { Some(canonical) } else { None }
+}
+
+/// Return a MIME type string for a file extension.
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" | "heif" => "image/heic",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "mts" | "cts" => "text/typescript",
+        "rs" => "text/x-rust",
+        "swift" => "text/x-swift",
+        "py" => "text/x-python",
+        "rb" => "text/x-ruby",
+        "go" => "text/x-go",
+        "java" => "text/x-java",
+        "kt" | "kts" => "text/x-kotlin",
+        "c" | "cc" | "cpp" | "cxx" => "text/x-c",
+        "h" | "hpp" => "text/x-c",
+        "cs" => "text/x-csharp",
+        "sh" | "bash" | "zsh" | "fish" => "text/x-shellscript",
+        "md" | "markdown" => "text/markdown",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn is_image_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+}
+
+fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml")
+}
+
+fn file_browse_error(method: &str, path: &str, error: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": { "path": path, "error": error }
+    }).to_string()
+}
+
+/// Handle `bridge/files/list` — list directory entries within the working dir.
+async fn files_list_response(working_dir: &std::path::Path, path: &str) -> String {
+    let target = if path.is_empty() {
+        match working_dir.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return file_browse_error("bridge/files/listResponse", path, "not_found"),
+        }
+    } else {
+        match resolve_safe_path(working_dir, path) {
+            Some(p) => p,
+            None => return file_browse_error("bridge/files/listResponse", path, "forbidden"),
+        }
+    };
+
+    if !target.is_dir() {
+        return file_browse_error("bridge/files/listResponse", path, "not_a_directory");
+    }
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut dir) = tokio::fs::read_dir(&target).await {
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue; // skip hidden files/dirs
+            }
+            let Ok(metadata) = entry.metadata().await else { continue };
+            let kind = if metadata.is_dir() { "dir" } else { "file" };
+            let size = if metadata.is_file() { metadata.len() } else { 0 };
+            let ext = entry.path().extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_string();
+            let is_image = is_image_mime(mime_for_ext(&ext));
+            entries.push(serde_json::json!({
+                "name": name,
+                "kind": kind,
+                "size": size,
+                "isImage": is_image,
+            }));
+        }
+    }
+
+    // Sort: directories first, then files; alphabetically within each group
+    entries.sort_by(|a, b| {
+        let ak = a["kind"].as_str().unwrap_or("file");
+        let bk = b["kind"].as_str().unwrap_or("file");
+        match (ak, bk) {
+            ("dir", "file") => std::cmp::Ordering::Less,
+            ("file", "dir") => std::cmp::Ordering::Greater,
+            _ => a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")),
+        }
+    });
+
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "bridge/files/listResponse",
+        "params": { "path": path, "entries": entries }
+    }).to_string()
+}
+
+/// Handle `bridge/files/content` — return file bytes; text files as UTF-8 strings,
+/// binary/image files base64-encoded.
+async fn files_content_response(working_dir: &std::path::Path, path: &str) -> String {
+    let target = match resolve_safe_path(working_dir, path) {
+        Some(p) => p,
+        None => return file_browse_error("bridge/files/contentResponse", path, "forbidden"),
+    };
+
+    if target.is_dir() {
+        return file_browse_error("bridge/files/contentResponse", path, "is_directory");
+    }
+
+    let ext = target.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+    let mime = mime_for_ext(&ext);
+
+    match tokio::fs::read(&target).await {
+        Err(_) => file_browse_error("bridge/files/contentResponse", path, "not_found"),
+        Ok(bytes) => {
+            if is_text_mime(mime) {
+                match String::from_utf8(bytes) {
+                    Ok(text) => serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "bridge/files/contentResponse",
+                        "params": {
+                            "path": path,
+                            "mimeType": mime,
+                            "encoding": "text",
+                            "data": text,
+                        }
+                    }).to_string(),
+                    Err(e) => {
+                        // Not valid UTF-8 despite text/* MIME — fall back to base64
+                        use base64::{Engine, engine::general_purpose};
+                        let encoded = general_purpose::STANDARD.encode(e.into_bytes());
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "bridge/files/contentResponse",
+                            "params": {
+                                "path": path,
+                                "mimeType": mime,
+                                "encoding": "base64",
+                                "data": encoded,
+                            }
+                        }).to_string()
+                    }
+                }
+            } else {
+                use base64::{Engine, engine::general_purpose};
+                let encoded = general_purpose::STANDARD.encode(&bytes);
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "bridge/files/contentResponse",
+                    "params": {
+                        "path": path,
+                        "mimeType": mime,
+                        "encoding": "base64",
+                        "data": encoded,
+                    }
+                }).to_string()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod file_browse_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_safe_path_allows_valid_subpath() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let result = resolve_safe_path(dir.path(), "sub");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn resolve_safe_path_blocks_dotdot() {
+        let dir = TempDir::new().unwrap();
+        let result = resolve_safe_path(dir.path(), "../../etc/passwd");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_safe_path_blocks_encoded_traversal() {
+        let dir = TempDir::new().unwrap();
+        // Even without .., a symlink outside the dir should be blocked.
+        // A path with .. embedded is always rejected early.
+        let result = resolve_safe_path(dir.path(), "foo/../../../etc");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn mime_for_common_extensions() {
+        assert_eq!(mime_for_ext("rs"), "text/x-rust");
+        assert_eq!(mime_for_ext("swift"), "text/x-swift");
+        assert_eq!(mime_for_ext("json"), "application/json");
+        assert_eq!(mime_for_ext("jpg"), "image/jpeg");
+        assert_eq!(mime_for_ext("PNG"), "image/png"); // case insensitive
+    }
+
+    #[tokio::test]
+    async fn files_list_response_lists_entries() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("hello.rs"), b"fn main() {}").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        // Hidden files are excluded
+        std::fs::write(dir.path().join(".hidden"), b"secret").unwrap();
+
+        let resp = files_list_response(dir.path(), "").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let entries = v["params"]["entries"].as_array().unwrap();
+        // subdir first (dir), then hello.rs (file); .hidden excluded
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["kind"], "dir");
+        assert_eq!(entries[0]["name"], "subdir");
+        assert_eq!(entries[1]["name"], "hello.rs");
+    }
+
+    #[tokio::test]
+    async fn files_list_response_forbids_traversal() {
+        let dir = TempDir::new().unwrap();
+        let resp = files_list_response(dir.path(), "../../etc").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["error"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn files_content_response_returns_text() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), b"fn main() {}").unwrap();
+        let resp = files_content_response(dir.path(), "lib.rs").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["encoding"], "text");
+        assert_eq!(v["params"]["mimeType"], "text/x-rust");
+        assert!(v["params"]["data"].as_str().unwrap().contains("fn main"));
+    }
+
+    #[tokio::test]
+    async fn files_content_response_forbids_traversal() {
+        let dir = TempDir::new().unwrap();
+        let resp = files_content_response(dir.path(), "../../etc/passwd").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["error"], "forbidden");
+    }
 }

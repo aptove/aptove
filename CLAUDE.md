@@ -99,6 +99,10 @@ Each item below has a dedicated page in `docs/aptove/advanced/`:
 | client → bridge | `bridge/registerPushToken` | Register device for push notifications |
 | client → bridge | `bridge/unregisterPushToken` | Deregister device |
 | client → bridge | `bridge/appendMemory` | Append a note to `MEMORY.md` |
+| client → bridge | `bridge/files/list` | List directory entries within the working directory; params: `{ path }` |
+| client → bridge | `bridge/files/content` | Fetch file contents (text or base64); params: `{ path }` |
+| bridge → client | `bridge/files/listResponse` | Directory listing result; params: `{ path, entries[] }` or `{ path, error }` |
+| bridge → client | `bridge/files/contentResponse` | File content result; params: `{ path, mimeType, encoding, data }` or `{ path, error }` |
 
 ---
 
