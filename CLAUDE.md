@@ -152,9 +152,9 @@ After any wizard completion (`finish_wizard()`), the QR pairing popup is opened 
 
 ## Timing Anti-Patterns
 
-### Never use `tokio::time::sleep` to fix race conditions or sequencing issues
+### `sleep` is fine for pacing — wrong for synchronization
 
-Arbitrary `sleep` calls are a code smell. They are non-deterministic — too short under load, wasteful when idle — and they hide the real bug rather than fixing it.
+`sleep` is acceptable for pacing (backoff, rate limiting, debounce). It is a code smell when used for synchronization or sequencing: it is non-deterministic (too short under load, wasteful when idle) and hides the real bug rather than fixing it.
 
 **Wrong:**
 ```rust
@@ -169,23 +169,24 @@ assert!(something_the_task_should_have_done());
 
 **Right — await the actual condition using a channel, watch, or select:**
 ```rust
-// ✅ Wait for the real ready signal
-let _ = ready_rx.changed().await;   // tokio::sync::watch
-send_message(&client, msg).await?;
+// ✅ Await the connect/handshake itself
+let stream = TcpStream::connect(addr).await?;
+send_message(&stream, msg).await?;
 
-// ✅ Use a oneshot to know when the task is initialized
-let (tx, rx) = tokio::sync::oneshot::channel();
-tokio::spawn(async move { tx.send(()).ok(); /* ... */ });
-rx.await.ok();
+// ✅ Do setup before spawning; else use a oneshot ready signal
+let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+tokio::spawn(async move { /* bind, init… */ ready_tx.send(()).ok(); });
+ready_rx.await.ok();
 ```
 
 | Anti-pattern | Proper mechanism |
 |---|---|
-| `sleep` before sending on a fresh connection | `watch` channel on connection state; `Notify` |
-| `sleep` to wait for a spawned task to start | `oneshot` channel sent from the task when ready |
-| `sleep` in a retry loop | `tokio::time::interval` with exponential backoff |
-| `sleep` to avoid a data race | `Mutex` / `RwLock` / channel ordering |
-| `sleep` in tests to wait for side effects | `tokio::sync::Barrier`, `watch`, or poll with `timeout` |
+| `sleep` before sending on a fresh connection | Await the connect/handshake itself; `watch` channel for connection state |
+| `sleep` to wait for a spawned task to start | Do setup (e.g. bind) before spawning; else `oneshot` ready signal |
+| Fixed `sleep` in a retry loop | `tokio::time::sleep` with exponential backoff + jitter + cap (`backon`, `tokio-retry`) |
+| `sleep` to avoid a race condition | `oneshot` / channel for ordering; `Mutex` for exclusive access |
+| `sleep` in tests to wait for side effects | Await the effect via a channel; `tokio::time::pause()`; poll with `timeout` as last resort |
+| `std::thread::sleep` in async code | `tokio::time::sleep`, or `spawn_blocking` |
 
 ---
 
