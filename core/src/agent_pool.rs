@@ -71,6 +71,11 @@ pub struct PooledAgent {
     /// Shared suppress-response ID used by both connection handlers and the
     /// task scheduler to suppress memory-compaction responses from reaching clients.
     pub suppress_response_id: Arc<std::sync::Mutex<Option<String>>>,
+    /// Signals the stdout-reader background task to stop immediately.
+    /// Sending on this closes the broadcast channel, which makes Task 2 in
+    /// bridge.rs receive RecvError::Closed and send a WebSocket Close frame to
+    /// iOS so it reconnects and picks up the new agent command.
+    stdout_kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl PooledAgent {
@@ -83,8 +88,16 @@ impl PooledAgent {
         }
     }
 
-    /// Kill the agent process gracefully
+    /// Kill the agent process and stop the stdout reader task.
+    /// Stopping the stdout reader drops its broadcast::Sender clone, which closes
+    /// the broadcast channel and causes Task 2 in bridge.rs to send a WebSocket
+    /// Close frame to the iOS client so it reconnects to the new agent.
     pub async fn kill(&mut self) {
+        // Stop the stdout reader task first so the broadcast channel closes immediately,
+        // even if the underlying process has orphan child processes still alive.
+        if let Some(tx) = self.stdout_kill_tx.take() {
+            let _ = tx.send(());
+        }
         info!("Killing pooled agent process");
         if let Err(e) = self.process.kill().await {
             error!("Failed to kill agent process: {}", e);
@@ -302,9 +315,27 @@ impl AgentPool {
         let overflow_for_stdout = Arc::clone(&overflow_buffer);
         let max_buffer = self.config.max_buffer_size;
         let buffer_enabled = self.config.buffer_messages;
+        let (stdout_kill_tx, mut stdout_kill_rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             let mut lines = stdout_reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            loop {
+            // Select between kill signal and next stdout line so kill() immediately
+            // drops stdout_tx (closing the broadcast channel) even when an orphan
+            // child process (e.g. node.js spawned by npx) is still running.
+            let line = tokio::select! {
+                biased;
+                _ = &mut stdout_kill_rx => {
+                    debug!("Stdout reader task received kill signal — stopping");
+                    break;
+                }
+                result = lines.next_line() => {
+                    match result {
+                        Ok(Some(l)) => l,
+                        _ => break,
+                    }
+                }
+            };
+            {
                 debug!(
                     "Pooled agent stdout ({} bytes): {}",
                     line.len(),
@@ -357,7 +388,8 @@ impl AgentPool {
                         }
                     }
                 }
-            }
+            } // end line-processing block
+            } // end loop
             debug!("Pooled agent stdout reader task ended");
         });
 
@@ -380,6 +412,7 @@ impl AgentPool {
             message_buffer: Vec::new(),
             overflow_buffer,
             cached_init_response: None,
+            stdout_kill_tx: Some(stdout_kill_tx),
             cached_session_response: None,
             agent_command: agent_command.to_string(),
             agent_name: agent_name_shared,
