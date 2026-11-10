@@ -54,6 +54,7 @@ pub async fn run_bridge(
     event_tx: mpsc::Sender<AppEvent>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     qr_visible: Arc<AtomicBool>,
+    agent_update_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<()> {
     let agent_command = config.agent_command.clone()
         .ok_or_else(|| anyhow::anyhow!("No agent_command in config"))?;
@@ -317,7 +318,7 @@ pub async fn run_bridge(
     }
 
     let result = tokio::select! {
-        r = bridge.start() => r,
+        r = bridge.start(agent_update_rx) => r,
         _ = &mut shutdown_rx => {
             info!("Bridge shutdown requested");
             Ok(())

@@ -24,6 +24,9 @@ Aptove is a stand-alone CLI app to connect any AI Agents that support Agent Clie
 - 🔑 **Stable Agent Identity**: `agent_id` UUID persisted in `common.toml` for multi-transport dedup on mobile
 - 🔔 **Push Notifications**: Wake the mobile app when the agent responds while backgrounded
 - 🖥️ **Terminal UI**: Interactive TUI for setup and day-to-day management
+- ⏰ **Scheduled Tasks**: Create recurring or one-time prompts that run automatically on a schedule
+- 🧠 **Persistent Memory**: `MEMORY.md` injected into every new session; consolidated automatically
+- 🔄 **Hot Agent Reload**: Change the AI agent command via `/agent` without restarting the transport — connected clients seamlessly reconnect to the new agent
 
 ---
 
@@ -52,13 +55,15 @@ All settings live in `common.toml`, created automatically by the setup wizard on
 ```toml
 agent_id   = "550e8400-e29b-41d4-a716-446655440000"  # auto-generated UUID
 auth_token = "base64urltoken"                         # auto-generated
-agent_command = "copilot --acp"                       # set by setup wizard
+agent_command = "npx @agentclientprotocol/claude-agent-acp"  # set by setup wizard
 
 keep_alive = true    # prevent system sleep while Aptove Router is running
 log_level  = "WARN"  # ERROR / WARN / INFO / DEBUG / TRACE
 
 log_file_max_mb = 10  # max size per log file in MB before rotation (default: 10)
 log_file_count  = 5   # number of log files to keep (default: 5)
+
+memory_max_kb = 1024  # max MEMORY.md size for injection; warn at 80%, block at 100%
 
 [transports.local]
 enabled = true
@@ -98,7 +103,7 @@ All Aptove Router state lives in the config directory. These files are created a
 
 Running `aptove` opens the interactive TUI. On first launch it runs the setup wizard:
 
-1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/aptove/agent](https://docs.aptove.com/aptove/agent) for a full list.
+1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `npx @agentclientprotocol/claude-agent-acp`, `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/aptove/agent](https://docs.aptove.com/aptove/agent) for a full list.
 2. **Choose Transport** — pick Local (same Wi-Fi) or Tailscale.
 3. **QR Code** — scan with the mobile app to pair.
 
@@ -111,12 +116,52 @@ Type these in the input bar while Aptove Router is running:
 | Command | Description |
 |---------|-------------|
 | `/qr` | Show QR pairing code for the mobile app |
-| `/agent` | Change the AI agent |
-| `/push` | Configure push notifications |
+| `/agent` | Change the AI agent command (hot-reload — no transport restart) |
 | `/transport` | Change the transport |
+| `/push` | Configure push notifications |
 | `/keep-alive` | Toggle to prevent the computer to sleep |
 | `/log-level` | Change log verbosity (default: WARN) |
 | `/quit` | Exit Aptove |
+
+---
+
+## Scheduled Tasks
+
+Aptove Router can run prompts on a schedule — useful for recurring summaries, daily digests, or any task that should fire automatically without a user sitting at the keyboard.
+
+Tasks are managed from the mobile app (Tasks tab) or by writing JSON files directly to `.aptove/tasks/`. Each task has a name, a prompt, and a schedule (cron expression or one-time timestamp).
+
+A built-in **Compact Memory** task runs periodically to merge and summarise `MEMORY.md`, keeping it concise as the context grows.
+
+### How scheduled tasks work
+
+1. The task scheduler wakes every 60 seconds and checks which tasks are due.
+2. For each due task it opens a new session and sends the configured prompt.
+3. One-time tasks are deleted after they fire. Recurring tasks advance to the next scheduled time.
+4. If Aptove Router was offline when a task was due, it executes once on the next startup tick and then resumes the normal schedule.
+
+### Task file format (`.aptove/tasks/<id>.json`)
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Daily Summary",
+  "prompt": "Summarise what happened today and update MEMORY.md.",
+  "enabled": true,
+  "schedule": { "type": "cron", "cron": "0 18 * * *", "timezone": "America/New_York" },
+  "next_run_at": "2025-01-02T23:00:00Z"
+}
+```
+
+---
+
+## Persistent Memory
+
+Aptove Router maintains a `MEMORY.md` file in the config directory. Its contents are automatically injected at the start of every new session so the agent retains context across conversations.
+
+- Append a note from the mobile app via the memory button in the chat view.
+- The **Compact Memory** scheduled task periodically asks the agent to merge and compress `MEMORY.md` so it doesn't grow unbounded.
+- A configurable size limit (`memory_max_kb`, default 1024 KB) prevents injection if the file grows too large.
 
 ---
 
@@ -203,6 +248,8 @@ The agent process is spawned as a subprocess via stdio. Aptove Router handles th
 | TLS handshake failure | Certificate mismatch | Delete the config dir and restart to regenerate certs; re-pair the device |
 | App cannot reach Aptove Router | Firewall blocking the port | Check OS firewall; ensure the port in `common.toml` is open |
 | Transport fails to start | No transport has `enabled = true` | Run Aptove Router and check the setup wizard |
+| `🔐 Agent returned authentication error` in log | Agent requires an API key (e.g. `ANTHROPIC_API_KEY`) that is not set in the environment | Set the required env var and use `/agent` to reload; check the agent's own documentation |
+| Session fails after switching agent command | Stale session ID from previous agent | The app falls back to `session/new` automatically; if it persists, disconnect and reconnect from the mobile app |
 
 ### Debugging
 
@@ -214,14 +261,19 @@ The agent process is spawned as a subprocess via stdio. Aptove Router handles th
 log_level = "DEBUG"
 
 # Test agent command independently
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | copilot --acp
+echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | npx @agentclientprotocol/claude-agent-acp
 ```
 
-### Testing with Other ACP-Compatible Agents
+### ACP-Compatible Agents
 
-Please note that the project is extensively tested only with Copilot CLI. Open a bug report if you notice any issues with other ACP-Compatible Agents.
+Aptove works with any agent that implements the [Agent Client Protocol](https://agentclientprotocol.com). Tested agents include:
 
-Run `aptove` and pick an agent from the setup wizard, or edit `agent_command` directly in `common.toml`.
+- `npx @agentclientprotocol/claude-agent-acp` — Claude (requires `ANTHROPIC_API_KEY`)
+- `copilot --acp` — GitHub Copilot CLI
+- `gemini --experimental-acp` — Google Gemini CLI
+- `goose acp` — Block's Goose
+
+Run `aptove` and pick an agent from the setup wizard, or change it at any time via `/agent` (hot-reloads without transport restart).
 
 ---
 

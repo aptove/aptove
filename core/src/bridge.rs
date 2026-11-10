@@ -79,7 +79,9 @@ impl TriggerRateLimiter {
 #[derive(Clone)]
 pub enum AgentHandle {
     /// Spawn an external subprocess (existing behavior).
-    Command(String),
+    /// The command is behind an Arc<Mutex> so it can be hot-reloaded without
+    /// restarting the bridge transport.
+    Command(Arc<std::sync::Mutex<String>>),
     /// Communicate via in-process channels (embedded mode).
     InProcess {
         stdin_tx: mpsc::Sender<Vec<u8>>,
@@ -135,7 +137,7 @@ pub struct StdioBridge {
 impl StdioBridge {
     pub fn new(agent_command: String, port: u16) -> Self {
         Self {
-            agent_handle: AgentHandle::Command(agent_command),
+            agent_handle: AgentHandle::Command(Arc::new(std::sync::Mutex::new(agent_command))),
             port,
             bind_addr: "0.0.0.0".to_string(),
             auth_token: None,
@@ -231,6 +233,16 @@ impl StdioBridge {
         self
     }
 
+    /// Returns the Arc<Mutex<String>> backing the agent command, so callers
+    /// can send a hot-reload update without restarting the bridge.
+    pub fn agent_command_arc(&self) -> Option<Arc<std::sync::Mutex<String>>> {
+        if let AgentHandle::Command(ref arc) = self.agent_handle {
+            Some(Arc::clone(arc))
+        } else {
+            None
+        }
+    }
+
     /// Set the bind address
     pub fn with_bind_addr(mut self, addr: String) -> Self {
         self.bind_addr = addr;
@@ -287,8 +299,11 @@ impl StdioBridge {
         self.pairing_manager.as_ref()
     }
 
-    /// Start the bridge server
-    pub async fn start(&self) -> Result<()> {
+    /// Start the bridge server.
+    /// `update_rx` receives new agent command strings for hot-reload.
+    /// When a command arrives, all existing pool agents are killed and the
+    /// command Arc is updated; the next connection spawns a fresh agent.
+    pub async fn start(&self, mut update_rx: tokio::sync::mpsc::Receiver<String>) -> Result<()> {
         let addr = format!("{}:{}", self.bind_addr, self.port);
         let listener = TcpListener::bind(&addr)
             .await
@@ -325,69 +340,85 @@ impl StdioBridge {
         let webhook_rate_limiter = Arc::clone(&self.webhook_rate_limiter);
 
         loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    // Extract IP for rate limiting
-                    let client_ip = addr.ip();
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, addr)) => {
+                            // Extract IP for rate limiting
+                            let client_ip = addr.ip();
 
-                    // Check rate limits before processing
-                    if let Err(e) = rate_limiter.check_connection(client_ip).await {
-                        warn!("🚫 Rate limit exceeded for {}: {}", client_ip, e);
-                        // Connection will be dropped, client should retry later
-                        continue;
-                    }
-
-                    info!("📱 New connection from: {}", addr);
-                    let agent_handle = self.agent_handle.clone();
-                    let auth_token = Arc::clone(&auth_token);
-                    let rate_limiter = Arc::clone(&rate_limiter);
-                    let tls_config = tls_config.clone();
-                    let pairing_manager = pairing_manager.clone();
-                    let agent_pool = self.agent_pool.clone();
-                    let push_relay = self.push_relay.clone();
-                    let webhook_resolver = webhook_resolver.clone();
-                    let webhook_rate_limiter = Arc::clone(&webhook_rate_limiter);
-                    let client_ip_str = addr.ip().to_string();
-                    let working_dir = self.working_dir.clone();
-                    let slash_commands = Arc::clone(&self.slash_commands);
-                    let memory_path = self.memory_path.clone();
-                    let memory_max_bytes = self.memory_max_bytes;
-                    let ws_max_message_bytes = self.ws_max_message_bytes;
-                    let bridge_agent_id = self.bridge_agent_id.clone();
-                    let agent_name = self.agent_name.clone();
-                    let config_dir = self.config_dir.clone();
-                    let tasks_dir = self.tasks_dir.clone();
-
-                    tokio::spawn(async move {
-                        // Register connection
-                        rate_limiter.add_connection(client_ip).await;
-
-                        let result = if let Some(tls) = tls_config {
-                            // TLS connection
-                            match tls.acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
-                                    handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
-                                }
-                                Err(e) => {
-                                    warn!("🚫 TLS handshake failed: {}", e);
-                                    Err(anyhow::anyhow!("TLS handshake failed: {}", e))
-                                }
+                            // Check rate limits before processing
+                            if let Err(e) = rate_limiter.check_connection(client_ip).await {
+                                warn!("🚫 Rate limit exceeded for {}: {}", client_ip, e);
+                                // Connection will be dropped, client should retry later
+                                continue;
                             }
-                        } else {
-                            // Plain TCP connection
-                            handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
-                        };
 
-                        // Always remove connection when done
-                        rate_limiter.remove_connection(client_ip).await;
+                            info!("📱 New connection from: {}", addr);
+                            let agent_handle = self.agent_handle.clone();
+                            let auth_token = Arc::clone(&auth_token);
+                            let rate_limiter = Arc::clone(&rate_limiter);
+                            let tls_config = tls_config.clone();
+                            let pairing_manager = pairing_manager.clone();
+                            let agent_pool = self.agent_pool.clone();
+                            let push_relay = self.push_relay.clone();
+                            let webhook_resolver = webhook_resolver.clone();
+                            let webhook_rate_limiter = Arc::clone(&webhook_rate_limiter);
+                            let client_ip_str = addr.ip().to_string();
+                            let working_dir = self.working_dir.clone();
+                            let slash_commands = Arc::clone(&self.slash_commands);
+                            let memory_path = self.memory_path.clone();
+                            let memory_max_bytes = self.memory_max_bytes;
+                            let ws_max_message_bytes = self.ws_max_message_bytes;
+                            let bridge_agent_id = self.bridge_agent_id.clone();
+                            let agent_name = self.agent_name.clone();
+                            let config_dir = self.config_dir.clone();
+                            let tasks_dir = self.tasks_dir.clone();
 
-                        if let Err(e) = result {
-                            error!("Connection error: {}", e);
+                            tokio::spawn(async move {
+                                // Register connection
+                                rate_limiter.add_connection(client_ip).await;
+
+                                let result = if let Some(tls) = tls_config {
+                                    // TLS connection
+                                    match tls.acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
+                                        }
+                                        Err(e) => {
+                                            warn!("🚫 TLS handshake failed: {}", e);
+                                            Err(anyhow::anyhow!("TLS handshake failed: {}", e))
+                                        }
+                                    }
+                                } else {
+                                    // Plain TCP connection
+                                    handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
+                                };
+
+                                // Always remove connection when done
+                                rate_limiter.remove_connection(client_ip).await;
+
+                                if let Err(e) = result {
+                                    error!("Connection error: {}", e);
+                                }
+                            });
                         }
-                    });
+                        Err(e) => {
+                            error!("Failed to accept connection: {}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to accept connection: {}", e);
+                Some(new_cmd) = update_rx.recv() => {
+                    // Hot-reload: update the agent command and kill all running agents.
+                    // Active iOS connections drop when the agent dies; iOS reconnects
+                    // immediately to the still-running bridge and gets a fresh agent.
+                    if let AgentHandle::Command(ref cmd_arc) = self.agent_handle {
+                        *cmd_arc.lock().unwrap() = new_cmd.clone();
+                    }
+                    if let Some(ref pool) = self.agent_pool {
+                        pool.write().await.kill_all_agents().await;
+                    }
+                    info!("🔄 Agent command updated to: {}", new_cmd);
                 }
             }
         }
@@ -986,8 +1017,9 @@ where
             warn!("Keep-alive enabled but no auth token found, falling back to legacy mode");
             handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
         } else {
-            if let AgentHandle::Command(ref cmd) = agent_handle {
-                handle_websocket_pooled(ws_stream, cmd.clone(), client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
+            if let AgentHandle::Command(ref cmd_arc) = agent_handle {
+                let cmd = cmd_arc.lock().unwrap().clone();
+                handle_websocket_pooled(ws_stream, cmd, client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
             } else {
                 // InProcess handles don't support pooling yet; fall back to per-connection
                 handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
@@ -1772,15 +1804,20 @@ where
                         }
                     }
 
-                    // If the agent reports "Session not found", invalidate the
-                    // cached session so the next reconnect creates a fresh one
-                    // instead of replaying a stale session ID.
-                    if line.contains("Session not found") {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if v.get("error").is_some() {
+                    // Log agent errors for visibility and handle special cases.
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if let Some(err) = v.get("error") {
+                            let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+                            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+                            let data = err.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                            if msg.to_lowercase().contains("authentication") || msg.to_lowercase().contains("unauthorized") {
+                                error!("🔐 Agent returned authentication error (code={}, message=\"{}\") — check API key / agent auth config", code, msg);
+                            } else if msg.contains("Session not found") || data.contains("Session not found") {
                                 warn!("🗑️ Agent reported 'Session not found' — invalidating cached session");
                                 let mut pool = pool_for_capture.write().await;
                                 pool.clear_session_response(&token_for_capture);
+                            } else {
+                                warn!("⚠️ Agent returned error (code={}, message=\"{}\")", code, msg);
                             }
                         }
                     }
@@ -2271,7 +2308,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     match agent_handle {
-        AgentHandle::Command(cmd) => handle_websocket_legacy(ws_stream, cmd, push_relay, working_dir).await,
+        AgentHandle::Command(cmd_arc) => {
+            let cmd = cmd_arc.lock().unwrap().clone();
+            handle_websocket_legacy(ws_stream, cmd, push_relay, working_dir).await
+        }
         AgentHandle::InProcess { stdin_tx, stdout_rx } => {
             handle_websocket_inprocess(ws_stream, stdin_tx, stdout_rx).await
         }

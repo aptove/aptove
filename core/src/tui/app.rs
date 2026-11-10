@@ -91,6 +91,9 @@ pub struct App {
     // Bridge shutdown signal.
     bridge_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 
+    // Channel to hot-reload the agent command without restarting the bridge.
+    agent_update_tx: Option<mpsc::Sender<String>>,
+
     // Event channel sender (for spawning background tasks).
     event_tx: mpsc::Sender<AppEvent>,
 
@@ -213,6 +216,7 @@ impl App {
             ac_idx: 0,
             selected_transport,
             bridge_shutdown: None,
+            agent_update_tx: None,
             event_tx,
             quit: false,
             keepalive,
@@ -277,7 +281,7 @@ impl App {
         if is_first_run {
             self.log_push_warn(
                 "First run in this folder — starting setup wizard. \
-                 All settings can be updated at any time via /config."
+                 Use /agent or /transport to update settings at any time."
                 .to_string(),
             );
         }
@@ -381,7 +385,7 @@ impl App {
                                 let elapsed = t.elapsed().as_secs();
                                 60u64.saturating_sub(elapsed)
                             });
-                            render_popup(frame, popup, &self.qr_string, &self.pairing_url, pairing_secs);
+                            render_popup(frame, popup, &self.qr_string, &self.pairing_url, pairing_secs, &self.transport_name);
                         }
                     }
                 }
@@ -622,6 +626,19 @@ impl App {
     }
 
     async fn advance_wizard_after_agent(&mut self) {
+        // If the bridge is already running, hot-reload the agent command without
+        // restarting the transport. All existing pool agents are killed; iOS
+        // reconnects to the still-running bridge and gets a fresh agent.
+        if let (Some(ref tx), Some(ref cmd)) = (self.agent_update_tx.clone(), self.config.agent_command.clone()) {
+            let _ = tx.send(cmd.clone()).await;
+            self.wizard = None;
+            self.screen = Screen::Running;
+            self.needs_clear = true;
+            self.agent_only_restart = false;
+            self.log_push(format!("Agent updated to: {}. Reconnecting clients will use the new agent.", cmd));
+            return;
+        }
+
         let enabled = self.config.enabled_transports();
         let enabled_count = enabled.len();
         if enabled_count == 1 {
@@ -822,9 +839,11 @@ impl App {
         self.transport_up = false;
         self.bridge_error = None;
         let qr_visible = Arc::clone(&self.qr_visible);
+        let (agent_update_tx, agent_update_rx) = mpsc::channel::<String>(4);
+        self.agent_update_tx = Some(agent_update_tx);
 
         tokio::spawn(async move {
-            if let Err(e) = run_bridge(config, transport, event_tx.clone(), shutdown_rx, qr_visible).await {
+            if let Err(e) = run_bridge(config, transport, event_tx.clone(), shutdown_rx, qr_visible, agent_update_rx).await {
                 let _ = event_tx.send(AppEvent::Bridge(BridgeEvent::BridgeError {
                     message: e.to_string(),
                 })).await;
@@ -1534,6 +1553,7 @@ impl App {
                 // seeing a stale sender and waiting for a BridgeStopped that
                 // will never arrive.
                 self.bridge_shutdown = None;
+                self.agent_update_tx = None;
                 self.transport_up = false;
                 self.log_push("Bridge stopped.".to_string());
                 // If finish_wizard() asked us to restart after the old bridge

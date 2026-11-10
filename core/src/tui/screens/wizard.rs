@@ -230,7 +230,7 @@ pub fn wizard_url_at(step: &WizardStep, col: u16, row: u16, term: Rect) -> Optio
 
 pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
     let setup_note: Option<&str> = if !state.cancelable {
-        Some("Tip: all settings can be updated later via /config")
+        Some("Tip: use /agent or /transport to update settings at any time")
     } else {
         None
     };

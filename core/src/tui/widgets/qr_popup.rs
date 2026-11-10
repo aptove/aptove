@@ -106,6 +106,7 @@ pub fn parse_pairing_fields(url: &str) -> Vec<PairingField> {
 /// `pairing_secs`: remaining seconds shown in the title; `Some(0)` shows
 /// "renewing…", `None` omits the countdown entirely.
 /// `text_mode`: when true, shows the parsed pairing fields for manual entry.
+/// `transport`: the active transport name shown in the title (e.g. "local", "tailscale-serve").
 pub fn render_qr_popup(
     frame: &mut Frame,
     area: Rect,
@@ -113,27 +114,33 @@ pub fn render_qr_popup(
     qr_string: &str,
     text_mode: bool,
     url: &str,
+    transport: &str,
 ) {
     let popup_area = centered_rect(70, 80, area);
 
     frame.render_widget(Clear, popup_area);
 
     let toggle_hint = if text_mode { "[Q] show QR" } else { "[T] show text" };
+    let transport_badge = if transport.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", transport)
+    };
     let title: Line = match pairing_secs {
         Some(0) => Line::from(vec![
-            Span::raw(" Pairing QR Code"),
+            Span::raw(format!(" Pairing QR Code{}", transport_badge)),
             Span::styled(" — renewing…", Style::default().fg(Color::Red)),
             Span::raw(format!("  {}  Esc close ", toggle_hint)),
         ]),
         Some(s) => Line::from(vec![
-            Span::raw(" Pairing QR Code"),
+            Span::raw(format!(" Pairing QR Code{}", transport_badge)),
             Span::styled(
                 format!(" — expires in {}s", s),
                 Style::default().fg(Color::Red),
             ),
             Span::raw(format!("  {}  Esc close ", toggle_hint)),
         ]),
-        None => Line::from(format!(" Pairing QR Code  {}  Esc close ", toggle_hint)),
+        None => Line::from(format!(" Pairing QR Code{}  {}  Esc close ", transport_badge, toggle_hint)),
     };
 
     let block = Block::default()

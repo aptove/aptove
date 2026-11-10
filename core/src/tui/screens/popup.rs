@@ -48,12 +48,13 @@ pub fn render_popup(
     qr_string: &Option<String>,
     pairing_url: &Option<String>,
     pairing_secs: Option<u64>,
+    transport: &str,
 ) {
     match kind {
         PopupKind::QrCode { text_mode } => {
             let qr = qr_string.as_deref().unwrap_or("No QR code available yet.\nStart Aptove first.");
             let url = pairing_url.as_deref().unwrap_or("No pairing URL available yet.");
-            render_qr_popup(frame, frame.area(), pairing_secs, qr, *text_mode, url);
+            render_qr_popup(frame, frame.area(), pairing_secs, qr, *text_mode, url, transport);
         }
         PopupKind::LogLevel { selected } => {
             render_log_level_popup(frame, *selected);

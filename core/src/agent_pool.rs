@@ -91,6 +91,7 @@ impl PooledAgent {
         }
     }
 
+
     /// Subscribe to agent stdout messages
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.agent_to_ws_tx.subscribe()
@@ -471,6 +472,18 @@ impl AgentPool {
         if let Some(mut agent) = self.agents.remove(token) {
             agent.kill().await;
         }
+    }
+
+    /// Kill and remove all agents. Called when the agent command changes so the
+    /// next connection spawns a fresh agent with the new command.
+    pub async fn kill_all_agents(&mut self) {
+        let keys: Vec<String> = self.agents.keys().cloned().collect();
+        for key in keys {
+            if let Some(mut agent) = self.agents.remove(&key) {
+                agent.kill().await;
+            }
+        }
+        info!("All pooled agents killed (agent command update)");
     }
 
     /// Check for idle agents that have exceeded the timeout and kill them
