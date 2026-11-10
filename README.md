@@ -55,7 +55,7 @@ All settings live in `common.toml`, created automatically by the setup wizard on
 ```toml
 agent_id   = "550e8400-e29b-41d4-a716-446655440000"  # auto-generated UUID
 auth_token = "base64urltoken"                         # auto-generated
-agent_command = "npx @agentclientprotocol/claude-agent-acp"  # set by setup wizard
+agent_command = "claude-code-acp"  # set by setup wizard
 
 keep_alive = true    # prevent system sleep while Aptove Router is running
 log_level  = "WARN"  # ERROR / WARN / INFO / DEBUG / TRACE
@@ -103,7 +103,7 @@ All Aptove Router state lives in the config directory. These files are created a
 
 Running `aptove` opens the interactive TUI. On first launch it runs the setup wizard:
 
-1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `npx @agentclientprotocol/claude-agent-acp`, `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/aptove/agent](https://docs.aptove.com/aptove/agent) for a full list.
+1. **Configure Agent** — enter the shell command that starts your ACP-compatible agent (e.g. `claude-code-acp`, `copilot --acp`, `gemini --experimental-acp`, `goose acp`). See [docs.aptove.com/aptove/agent](https://docs.aptove.com/aptove/agent) for a full list.
 2. **Choose Transport** — pick Local (same Wi-Fi) or Tailscale.
 3. **QR Code** — scan with the mobile app to pair.
 
@@ -261,14 +261,14 @@ The agent process is spawned as a subprocess via stdio. Aptove Router handles th
 log_level = "DEBUG"
 
 # Test agent command independently
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | npx @agentclientprotocol/claude-agent-acp
+echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | claude-code-acp
 ```
 
 ### ACP-Compatible Agents
 
 Aptove works with any agent that implements the [Agent Client Protocol](https://agentclientprotocol.com). Tested agents include:
 
-- `npx @agentclientprotocol/claude-agent-acp` — Claude (requires `ANTHROPIC_API_KEY`)
+- `claude-code-acp` — Claude (install: `npm install -g @agentclientprotocol/claude-agent-acp`, then run `claude` and `/login`)
 - `copilot --acp` — GitHub Copilot CLI
 - `gemini --experimental-acp` — Google Gemini CLI
 - `goose acp` — Block's Goose
