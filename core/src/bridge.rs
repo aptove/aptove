@@ -1925,7 +1925,8 @@ where
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    debug!("Agent broadcast channel closed (agent exited)");
+                    info!("Agent process exited — closing client WebSocket so it reconnects to the new agent");
+                    let _ = ws_sender.send(Message::Close(None)).await;
                     break;
                 }
             } } // end match result / end recv arm
