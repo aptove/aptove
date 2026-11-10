@@ -226,7 +226,7 @@ pub async fn run_bridge(
     }
     let pool = std::sync::Arc::new(tokio::sync::RwLock::new(pool_builder));
     let _reaper = start_reaper(pool.clone(), std::time::Duration::from_secs(60));
-    bridge = bridge.with_agent_pool(pool);
+    bridge = bridge.with_agent_pool(pool.clone());
 
     if let Some(relay) = push_relay_arc {
         bridge = bridge.with_push_relay(relay);
@@ -248,9 +248,28 @@ pub async fn run_bridge(
     if !memory_path.exists() {
         let _ = std::fs::write(&memory_path, "");
     }
-    bridge = bridge.with_memory_path(memory_path)
+    bridge = bridge.with_memory_path(memory_path.clone())
         .with_memory_max_bytes(config.memory_max_kb * 1024)
         .with_ws_max_message_bytes((config.ws_max_message_mb * 1024 * 1024) as usize);
+
+    // Scheduled tasks
+    let tasks_dir = config_dir.join("tasks");
+    if !tasks_dir.exists() {
+        let _ = std::fs::create_dir_all(&tasks_dir);
+    }
+    crate::task_scheduler::ensure_default_tasks(&tasks_dir);
+    bridge = bridge.with_tasks_dir(tasks_dir.clone());
+
+    // Spawn the task scheduler
+    let _scheduler = crate::task_scheduler::start_scheduler(
+        tasks_dir,
+        pool.clone(),
+        config.auth_token.clone(),
+        agent_command.clone(),
+        cwd.clone(),
+        Some(memory_path),
+        config.memory_max_kb * 1024,
+    ).await;
 
     // Spawn a task that renews the pairing code only while the QR popup is visible.
     // When qr_visible transitions false→true, a fresh code is generated immediately.
