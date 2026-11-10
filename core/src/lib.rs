@@ -12,6 +12,7 @@ pub mod qr;
 pub mod rate_limiter;
 pub mod runner;
 pub mod tailscale;
+pub mod task_scheduler;
 pub mod tls;
 pub mod transport;
 pub mod tui;

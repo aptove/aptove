@@ -86,6 +86,8 @@ Each item below has a dedicated page in `docs/aptove/advanced/`:
 | Memory-update response suppression | Agent responses to `__memory_update_*` ID | memory-consolidation |
 | `available_commands_update` injection | `session/update` (synthesized) | commands-injection |
 | Response buffering and replay | Any agent message | sessions |
+| Scheduled task execution | `session/new`, `session/prompt` (synthesized) | scheduled-task-execution |
+| Compact-memory task response suppression | Agent responses to `__task_memory_compact_*` ID | scheduled-task-execution |
 
 ### `bridge/*` messages (never forwarded to agent)
 
@@ -101,6 +103,11 @@ Each item below has a dedicated page in `docs/aptove/advanced/`:
 | client → bridge | `bridge/appendMemory` | Append a note to `MEMORY.md` |
 | client → bridge | `bridge/files/list` | List directory entries within the working directory; params: `{ path }` |
 | client → bridge | `bridge/files/content` | Fetch file contents (text or base64); params: `{ path }` |
+| client → bridge | `bridge/createTask` | Create a scheduled task; params: `{ name, prompt, schedule }` |
+| client → bridge | `bridge/listTasks` | List all scheduled tasks |
+| client → bridge | `bridge/updateTask` | Update a task; params: `{ id, name?, prompt?, schedule?, enabled? }` |
+| client → bridge | `bridge/deleteTask` | Delete a task; params: `{ id }` |
+| bridge → client | `bridge/taskExecuted` | Notify that a scheduled task fired; params: `{ taskId, taskName, sessionId }` |
 | bridge → client | `bridge/files/listResponse` | Directory listing result; params: `{ path, entries[] }` or `{ path, error }` |
 | bridge → client | `bridge/files/contentResponse` | File content result; params: `{ path, mimeType, encoding, data }` or `{ path, error }` |
 
@@ -140,6 +147,45 @@ Every time Aptove Router starts, `WizardState::compute()` checks `CommonConfig` 
 **`CommonConfig::default()` must NOT pre-enable any transport.** The transport map starts empty so that a brand-new installation always shows the transport picker. Existing configs loaded from `common.toml` are unaffected.
 
 After any wizard completion (`finish_wizard()`), the QR pairing popup is opened automatically as soon as Aptove Router reports `PairingUrlReady`. This lets the user pair their mobile client immediately without typing `/qr`.
+
+---
+
+## Timing Anti-Patterns
+
+### Never use `tokio::time::sleep` to fix race conditions or sequencing issues
+
+Arbitrary `sleep` calls are a code smell. They are non-deterministic — too short under load, wasteful when idle — and they hide the real bug rather than fixing it.
+
+**Wrong:**
+```rust
+// ❌ Hoping the connection is ready after some delay
+tokio::time::sleep(Duration::from_millis(500)).await;
+send_message(&client, msg).await?;
+
+// ❌ Hoping a spawned task has started
+tokio::time::sleep(Duration::from_millis(100)).await;
+assert!(something_the_task_should_have_done());
+```
+
+**Right — await the actual condition using a channel, watch, or select:**
+```rust
+// ✅ Wait for the real ready signal
+let _ = ready_rx.changed().await;   // tokio::sync::watch
+send_message(&client, msg).await?;
+
+// ✅ Use a oneshot to know when the task is initialized
+let (tx, rx) = tokio::sync::oneshot::channel();
+tokio::spawn(async move { tx.send(()).ok(); /* ... */ });
+rx.await.ok();
+```
+
+| Anti-pattern | Proper mechanism |
+|---|---|
+| `sleep` before sending on a fresh connection | `watch` channel on connection state; `Notify` |
+| `sleep` to wait for a spawned task to start | `oneshot` channel sent from the task when ready |
+| `sleep` in a retry loop | `tokio::time::interval` with exponential backoff |
+| `sleep` to avoid a data race | `Mutex` / `RwLock` / channel ordering |
+| `sleep` in tests to wait for side effects | `tokio::sync::Barrier`, `watch`, or poll with `timeout` |
 
 ---
 

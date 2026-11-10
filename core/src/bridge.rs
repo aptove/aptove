@@ -128,6 +128,8 @@ pub struct StdioBridge {
     agent_name: String,
     /// Config directory for persisting name changes received via `bridge/setAgentName`.
     config_dir: Option<PathBuf>,
+    /// Directory for scheduled task JSON files (`.aptove/tasks/`).
+    tasks_dir: Option<PathBuf>,
 }
 
 impl StdioBridge {
@@ -153,6 +155,7 @@ impl StdioBridge {
             bridge_agent_id: String::new(),
             agent_name: String::new(),
             config_dir: None,
+            tasks_dir: None,
         }
     }
 
@@ -191,6 +194,12 @@ impl StdioBridge {
     /// Set the config directory for persisting name changes from `bridge/setAgentName`.
     pub fn with_config_dir(mut self, dir: PathBuf) -> Self {
         self.config_dir = Some(dir);
+        self
+    }
+
+    /// Set the directory for scheduled task files.
+    pub fn with_tasks_dir(mut self, dir: PathBuf) -> Self {
+        self.tasks_dir = Some(dir);
         self
     }
 
@@ -347,6 +356,7 @@ impl StdioBridge {
                     let bridge_agent_id = self.bridge_agent_id.clone();
                     let agent_name = self.agent_name.clone();
                     let config_dir = self.config_dir.clone();
+                    let tasks_dir = self.tasks_dir.clone();
 
                     tokio::spawn(async move {
                         // Register connection
@@ -356,7 +366,7 @@ impl StdioBridge {
                             // TLS connection
                             match tls.acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
+                                    handle_connection_generic(tls_stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
                                 }
                                 Err(e) => {
                                     warn!("🚫 TLS handshake failed: {}", e);
@@ -365,7 +375,7 @@ impl StdioBridge {
                             }
                         } else {
                             // Plain TCP connection
-                            handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
+                            handle_connection_generic(stream, agent_handle, auth_token, pairing_manager, agent_pool, push_relay, webhook_resolver, webhook_rate_limiter, client_ip_str, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
                         };
 
                         // Always remove connection when done
@@ -407,6 +417,7 @@ async fn handle_connection_generic<S>(
     bridge_agent_id: String,
     agent_name: String,
     config_dir: Option<PathBuf>,
+    tasks_dir: Option<PathBuf>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -461,7 +472,7 @@ where
     let prefixed_stream = PrefixedStream::new(request_bytes, stream);
     
     // Continue with WebSocket handling
-    handle_websocket_connection(prefixed_stream, agent_handle, auth_token, agent_pool, push_relay, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir).await
+    handle_websocket_connection(prefixed_stream, agent_handle, auth_token, agent_pool, push_relay, working_dir, slash_commands, memory_path, memory_max_bytes, ws_max_message_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
 }
 
 /// Handle a pairing request - validate the code and return connection details
@@ -876,7 +887,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 }
 
 /// Handle WebSocket connection after initial HTTP parsing
-async fn handle_websocket_connection<S>(stream: S, agent_handle: AgentHandle, auth_token: Arc<Option<String>>, agent_pool: Option<Arc<tokio::sync::RwLock<AgentPool>>>, push_relay: Option<Arc<PushRelayClient>>, working_dir: PathBuf, slash_commands: Arc<Vec<SlashCommandConfig>>, memory_path: Option<PathBuf>, memory_max_bytes: u64, ws_max_message_bytes: usize, bridge_agent_id: String, agent_name: String, config_dir: Option<PathBuf>) -> Result<()>
+async fn handle_websocket_connection<S>(stream: S, agent_handle: AgentHandle, auth_token: Arc<Option<String>>, agent_pool: Option<Arc<tokio::sync::RwLock<AgentPool>>>, push_relay: Option<Arc<PushRelayClient>>, working_dir: PathBuf, slash_commands: Arc<Vec<SlashCommandConfig>>, memory_path: Option<PathBuf>, memory_max_bytes: u64, ws_max_message_bytes: usize, bridge_agent_id: String, agent_name: String, config_dir: Option<PathBuf>, tasks_dir: Option<PathBuf>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -976,7 +987,7 @@ where
             handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
         } else {
             if let AgentHandle::Command(ref cmd) = agent_handle {
-                handle_websocket_pooled(ws_stream, cmd.clone(), client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id, agent_name, config_dir).await
+                handle_websocket_pooled(ws_stream, cmd.clone(), client_token, pool, push_relay, working_dir.clone(), slash_commands, device_client_id, memory_path, memory_max_bytes, bridge_agent_id, agent_name, config_dir, tasks_dir).await
             } else {
                 // InProcess handles don't support pooling yet; fall back to per-connection
                 handle_websocket_with_handle(ws_stream, agent_handle, push_relay, working_dir).await
@@ -1031,6 +1042,7 @@ async fn handle_websocket_pooled<S>(
     bridge_agent_id: String,
     agent_name: String,
     config_dir: Option<PathBuf>,
+    tasks_dir: Option<PathBuf>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1173,8 +1185,12 @@ where
     );
     // When Task 1 sends a silent memory-update prompt, it records the request id here.
     // Task 2 drops all agent output until it sees a response with that id, then clears it.
-    let suppress_response_id: Arc<std::sync::Mutex<Option<String>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    // Shared with the pool so the task scheduler can also suppress compact-memory responses.
+    let suppress_response_id: Arc<std::sync::Mutex<Option<String>>> = {
+        let pool_guard = pool.read().await;
+        pool_guard.get_suppress_response_id(&token)
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)))
+    };
 
     // Task 1: WebSocket → Agent (via channel)
     let ws_to_agent_tx_clone = ws_to_agent_tx.clone();
@@ -1189,6 +1205,7 @@ where
     let pool_for_set_name = Arc::clone(&pool);
     let config_dir_for_task1 = config_dir.clone();
     let working_dir_for_task1 = working_dir.clone();
+    let tasks_dir_for_task1 = tasks_dir.clone();
     let mut ws_to_agent = tokio::spawn(async move {
         // True once memory has been prepended to the first session/prompt of this connection.
         // Pre-set to true for reused agents resuming an existing session (session/load) since
@@ -1392,6 +1409,172 @@ where
                             }
                         }
                         
+                        // Handle bridge/createTask — create a new scheduled task file.
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("method").and_then(|m| m.as_str()) == Some("bridge/createTask") {
+                                if let Some(ref dir) = tasks_dir_for_task1 {
+                                    let req_id = v.get("id").cloned();
+                                    let params = v.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+                                    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("Untitled").to_string();
+                                    let prompt = params.get("prompt").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                                    let schedule: Option<crate::task_scheduler::TaskSchedule> = params.get("schedule")
+                                        .and_then(|s| serde_json::from_value(s.clone()).ok());
+
+                                    if let Some(schedule) = schedule {
+                                        let mut task = crate::task_scheduler::ScheduledTask {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            name,
+                                            prompt,
+                                            schedule,
+                                            enabled: true,
+                                            created_at: chrono::Utc::now().to_rfc3339(),
+                                            last_run_at: None,
+                                            next_run_at: None,
+                                        };
+                                        task.next_run_at = crate::task_scheduler::compute_next_run(&task);
+
+                                        match crate::task_scheduler::save_task_async(dir, &task).await {
+                                            Ok(_) => {
+                                                info!("⏰ Created scheduled task: {} ({})", task.name, task.id);
+                                                let response = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": { "task": task }
+                                                });
+                                                let _ = inject_tx.send(response.to_string()).await;
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to save task: {}", e);
+                                                let response = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "error": { "code": -32000, "message": format!("Failed to save task: {}", e) }
+                                                });
+                                                let _ = inject_tx.send(response.to_string()).await;
+                                            }
+                                        }
+                                    } else {
+                                        let response = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": req_id,
+                                            "error": { "code": -32602, "message": "Invalid or missing schedule parameter" }
+                                        });
+                                        let _ = inject_tx.send(response.to_string()).await;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+
+                        // Handle bridge/listTasks — return all tasks for this agent.
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("method").and_then(|m| m.as_str()) == Some("bridge/listTasks") {
+                                if let Some(ref dir) = tasks_dir_for_task1 {
+                                    let req_id = v.get("id").cloned();
+                                    let tasks = crate::task_scheduler::load_tasks_async(dir).await;
+                                    let response = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": req_id,
+                                        "result": { "tasks": tasks }
+                                    });
+                                    let _ = inject_tx.send(response.to_string()).await;
+                                }
+                                continue;
+                            }
+                        }
+
+                        // Handle bridge/updateTask — update fields of an existing task.
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("method").and_then(|m| m.as_str()) == Some("bridge/updateTask") {
+                                if let Some(ref dir) = tasks_dir_for_task1 {
+                                    let req_id = v.get("id").cloned();
+                                    let params = v.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                    let task_id = params.get("id").and_then(|i| i.as_str()).unwrap_or("");
+
+                                    let tasks = crate::task_scheduler::load_tasks_async(dir).await;
+                                    if let Some(mut task) = tasks.into_iter().find(|t| t.id == task_id) {
+                                        if let Some(name) = params.get("name").and_then(|n| n.as_str()) {
+                                            task.name = name.to_string();
+                                        }
+                                        if let Some(prompt) = params.get("prompt").and_then(|p| p.as_str()) {
+                                            task.prompt = prompt.to_string();
+                                        }
+                                        if let Some(enabled) = params.get("enabled").and_then(|e| e.as_bool()) {
+                                            task.enabled = enabled;
+                                        }
+                                        if let Some(schedule) = params.get("schedule")
+                                            .and_then(|s| serde_json::from_value::<crate::task_scheduler::TaskSchedule>(s.clone()).ok())
+                                        {
+                                            task.schedule = schedule;
+                                        }
+                                        task.next_run_at = crate::task_scheduler::compute_next_run(&task);
+
+                                        match crate::task_scheduler::save_task_async(dir, &task).await {
+                                            Ok(_) => {
+                                                info!("⏰ Updated task: {} ({})", task.name, task.id);
+                                                let response = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": { "task": task }
+                                                });
+                                                let _ = inject_tx.send(response.to_string()).await;
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to update task: {}", e);
+                                                let response = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "error": { "code": -32000, "message": format!("Failed to update task: {}", e) }
+                                                });
+                                                let _ = inject_tx.send(response.to_string()).await;
+                                            }
+                                        }
+                                    } else {
+                                        let response = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": req_id,
+                                            "error": { "code": -32001, "message": "Task not found" }
+                                        });
+                                        let _ = inject_tx.send(response.to_string()).await;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+
+                        // Handle bridge/deleteTask — remove a task file.
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("method").and_then(|m| m.as_str()) == Some("bridge/deleteTask") {
+                                if let Some(ref dir) = tasks_dir_for_task1 {
+                                    let req_id = v.get("id").cloned();
+                                    let task_id = v.pointer("/params/id").and_then(|i| i.as_str()).unwrap_or("");
+
+                                    match crate::task_scheduler::delete_task_async(dir, task_id).await {
+                                        Ok(_) => {
+                                            info!("⏰ Deleted task: {}", task_id);
+                                            let response = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "result": { "deleted": true }
+                                            });
+                                            let _ = inject_tx.send(response.to_string()).await;
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to delete task {}: {}", task_id, e);
+                                            let response = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "error": { "code": -32000, "message": format!("Failed to delete task: {}", e) }
+                                            });
+                                            let _ = inject_tx.send(response.to_string()).await;
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+
                         // On fresh agents, intercept session/load and return a
                         // synthetic error. A just-spawned agent has no sessions to
                         // load, and some agents (e.g. Goose) hang on unknown

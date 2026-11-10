@@ -91,6 +91,8 @@ All Aptove Router state lives in the config directory. These files are created a
 | `key.pem` | Private key for the TLS certificate. |
 | `cert-extra-sans.json` | Tracks extra Subject Alternative Names (IPs/hostnames) baked into the TLS cert. When these change, the cert is automatically regenerated. |
 | `logs/aptove.log` | Current log file. Rotated when it reaches `log_file_max_mb`. Up to `log_file_count` files are kept as `aptove.log`, `aptove.log.1`, etc. |
+| `tasks/*.json` | Scheduled task definitions. Each task is a JSON file with schedule, prompt, and metadata. Created/managed via the mobile app or by writing JSON files directly. |
+| `MEMORY.md` | Persistent agent memory. Contents are injected into every new session. |
 
 ### TUI
 

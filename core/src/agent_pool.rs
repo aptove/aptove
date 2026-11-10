@@ -68,6 +68,9 @@ pub struct PooledAgent {
     /// Human-readable agent name (from initialize response). Shared with the
     /// stdout broadcast task for push notification titles.
     pub agent_name: Arc<tokio::sync::RwLock<String>>,
+    /// Shared suppress-response ID used by both connection handlers and the
+    /// task scheduler to suppress memory-compaction responses from reaching clients.
+    pub suppress_response_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl PooledAgent {
@@ -379,6 +382,7 @@ impl AgentPool {
             cached_session_response: None,
             agent_command: agent_command.to_string(),
             agent_name: agent_name_shared,
+            suppress_response_id: Arc::new(std::sync::Mutex::new(None)),
         };
 
         self.agents.insert(token.to_string(), pooled);
@@ -434,6 +438,21 @@ impl AgentPool {
             info!("Cached createSession response for agent (keep-alive)");
             agent.cached_session_response = Some(response);
         }
+    }
+
+    /// Get the cached session response for a token (used by the task scheduler).
+    pub fn get_cached_session(&self, token: &str) -> Option<&str> {
+        self.agents
+            .get(token)
+            .and_then(|a| a.cached_session_response.as_deref())
+    }
+
+    /// Get the shared suppress-response ID for a token (used by the task scheduler
+    /// and connection handlers to suppress memory-compaction responses).
+    pub fn get_suppress_response_id(&self, token: &str) -> Option<Arc<std::sync::Mutex<Option<String>>>> {
+        self.agents
+            .get(token)
+            .map(|a| Arc::clone(&a.suppress_response_id))
     }
 
     /// Clear the cached session response (e.g., when agent reports "Session not found")
