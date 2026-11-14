@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -71,6 +71,11 @@ pub struct PooledAgent {
     /// Shared suppress-response ID used by both connection handlers and the
     /// task scheduler to suppress memory-compaction responses from reaching clients.
     pub suppress_response_id: Arc<std::sync::Mutex<Option<String>>>,
+    /// Device tokens already registered with cf-push-relay this session.
+    /// Checked before calling `register_device()` to avoid redundant KV writes
+    /// on every reconnect. Cleared when `notify()` fails so re-registration
+    /// happens on the next connect.
+    pub registered_push_tokens: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Signals the stdout-reader background task to stop immediately.
     /// Sending on this closes the broadcast channel, which makes Task 2 in
     /// bridge.rs receive RecvError::Closed and send a WebSocket Close frame to
@@ -417,6 +422,7 @@ impl AgentPool {
             agent_command: agent_command.to_string(),
             agent_name: agent_name_shared,
             suppress_response_id: Arc::new(std::sync::Mutex::new(None)),
+            registered_push_tokens: Arc::new(std::sync::Mutex::new(HashSet::new())),
         };
 
         self.agents.insert(token.to_string(), pooled);
@@ -487,6 +493,13 @@ impl AgentPool {
         self.agents
             .get(token)
             .map(|a| Arc::clone(&a.suppress_response_id))
+    }
+
+    /// Get the shared registered-push-tokens set for a token.
+    pub fn get_registered_push_tokens(&self, token: &str) -> Option<Arc<std::sync::Mutex<HashSet<String>>>> {
+        self.agents
+            .get(token)
+            .map(|a| Arc::clone(&a.registered_push_tokens))
     }
 
     /// Clear the cached session response (e.g., when agent reports "Session not found")

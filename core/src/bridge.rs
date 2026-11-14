@@ -1224,11 +1224,20 @@ where
             .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None)))
     };
 
+    // Set of device tokens already registered with the push relay this session.
+    // Avoids redundant register_device() calls on every reconnect.
+    let registered_push_tokens: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = {
+        let pool_guard = pool.read().await;
+        pool_guard.get_registered_push_tokens(&token)
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
+    };
+
     // Task 1: WebSocket → Agent (via channel)
     let ws_to_agent_tx_clone = ws_to_agent_tx.clone();
     let broadcast_tx_for_task1 = broadcast_tx.clone();
     let device_client_id_for_task1 = device_client_id.clone();
     let push_relay_for_register = push_relay.clone();
+    let registered_tokens_for_register = Arc::clone(&registered_push_tokens);
     let memory_path_for_task1 = memory_path.clone();
     let memory_max_bytes_task1 = memory_max_bytes;
     let current_session_id_task1 = Arc::clone(&current_session_id);
@@ -1262,18 +1271,33 @@ where
                                         let platform = params.get("platform").and_then(|p| p.as_str()).unwrap_or("");
                                         let device_token = params.get("deviceToken").and_then(|t| t.as_str()).unwrap_or("");
                                         let bundle_id = params.get("bundleId").and_then(|b| b.as_str()).unwrap_or("");
-                                        info!("📲 Registering push token: platform={}, bundle_id={}, token={}", platform, bundle_id, device_token);
-                                        let relay = Arc::clone(relay);
-                                        let platform = platform.to_string();
-                                        let device_token = device_token.to_string();
-                                        let bundle_id = bundle_id.to_string();
-                                        tokio::spawn(async move {
-                                            if let Err(e) = relay.register_device(&device_token, &platform, Some(&bundle_id)).await {
-                                                error!("Failed to register push token: {}", e);
-                                            } else {
-                                                info!("✅ Push token registered successfully");
-                                            }
-                                        });
+
+                                        // Skip registration if this token was already registered this session
+                                        let already_registered = registered_tokens_for_register
+                                            .lock()
+                                            .map(|set| set.contains(device_token))
+                                            .unwrap_or(false);
+
+                                        if already_registered {
+                                            debug!("📲 Push token already registered this session, skipping: token={}", device_token);
+                                        } else {
+                                            info!("📲 Registering push token: platform={}, bundle_id={}, token={}", platform, bundle_id, device_token);
+                                            let relay = Arc::clone(relay);
+                                            let platform = platform.to_string();
+                                            let device_token = device_token.to_string();
+                                            let bundle_id = bundle_id.to_string();
+                                            let tokens_set = Arc::clone(&registered_tokens_for_register);
+                                            tokio::spawn(async move {
+                                                if let Err(e) = relay.register_device(&device_token, &platform, Some(&bundle_id)).await {
+                                                    error!("Failed to register push token: {}", e);
+                                                } else {
+                                                    info!("✅ Push token registered successfully");
+                                                    if let Ok(mut set) = tokens_set.lock() {
+                                                        set.insert(device_token);
+                                                    }
+                                                }
+                                            });
+                                        }
                                     }
                                 }
                                 continue; // Always skip — never forward to agent
@@ -1736,6 +1760,7 @@ where
     };
     let current_session_id_task2 = Arc::clone(&current_session_id);
     let suppress_response_id_task2 = Arc::clone(&suppress_response_id);
+    let registered_tokens_for_push = Arc::clone(&registered_push_tokens);
     let memory_path_for_task2 = memory_path.clone();
     let agent_to_ws = tokio::spawn(async move {
         let mut init_captured = false;
@@ -1893,11 +1918,18 @@ where
                             debug!("triggering push via relay (active-connection-drop path)");
                             let relay = Arc::clone(relay);
                             let name = agent_name_for_push.clone();
+                            let tokens_set = Arc::clone(&registered_tokens_for_push);
                             tokio::spawn(async move {
                                 let agent_name = name.read().await.clone();
                                 match relay.notify(&agent_name).await {
                                     Ok(sent) => debug!("push relay notify: sent={}", sent),
-                                    Err(e) => warn!("push relay notify failed: {}", e),
+                                    Err(e) => {
+                                        warn!("push relay notify failed: {}", e);
+                                        // Clear registered tokens so devices re-register on next connect
+                                        if let Ok(mut set) = tokens_set.lock() {
+                                            set.clear();
+                                        }
+                                    }
                                 }
                             });
                         } else {
