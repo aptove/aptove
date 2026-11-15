@@ -301,6 +301,23 @@ cargo build --release    # Build
 cargo test               # Run tests
 ```
 
+## Contributors
+
+<a href="https://github.com/saltukalakus">
+  <img src="https://github.com/saltukalakus.png" width="60" height="60" alt="saltukalakus" title="saltukalakus" />
+</a>
+
+---
+
+## Security Hall of Fame
+
+Thank you to everyone who has responsibly disclosed security vulnerabilities in Aptove.
+See [SECURITY.md](SECURITY.md) to learn how to report a vulnerability.
+
+*No entries yet — be the first.*
+
+---
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE)
