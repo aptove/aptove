@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -171,6 +171,15 @@ pub struct CommonConfig {
     /// mobile app via `bridge/setAgentName`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
+
+    /// Include raw message content (prompts, agent replies) in log files.
+    ///
+    /// **Default: `false`.** When `false`, log lines record only byte counts
+    /// and method names — conversation text never reaches the disk.  Set to
+    /// `true` only for short-lived debugging sessions; anyone with read access
+    /// to the log directory can then see conversation content.
+    #[serde(default = "log_message_content_default", skip_serializing_if = "is_false")]
+    pub log_message_content: bool,
 }
 
 fn keep_alive_default() -> bool { true }
@@ -179,6 +188,8 @@ fn log_file_max_mb_default() -> u64 { 10 }
 fn log_file_count_default() -> usize { 5 }
 fn memory_max_kb_default() -> u64 { 1024 }
 fn ws_max_message_mb_default() -> u64 { 50 }
+fn log_message_content_default() -> bool { false }
+fn is_false(v: &bool) -> bool { !v }
 
 /// Configuration for a single transport.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -227,6 +238,7 @@ impl Default for CommonConfig {
             ws_max_message_mb: 50,
             last_transport: None,
             agent_name: None,
+            log_message_content: false,
         }
     }
 }
@@ -395,6 +407,61 @@ impl CommonConfig {
         }
         serde_json::to_string(&Value::Object(map)).context("Failed to serialize connection info")
     }
+
+    /// Returns the root directory that contains all per-project config dirs.
+    ///
+    /// - macOS / Linux: `~/.aptove/projects/`
+    /// - Windows: `%APPDATA%\Aptove\projects\`
+    pub fn projects_root() -> Option<PathBuf> {
+        #[cfg(windows)]
+        { BaseDirs::new().map(|b| b.data_dir().join("Aptove").join("projects")) }
+        #[cfg(not(windows))]
+        { BaseDirs::new().map(|b| b.home_dir().join(".aptove").join("projects")) }
+    }
+
+    /// Returns the set of TCP ports already claimed by `[transports.local]`
+    /// in every sibling project config under `projects_root()`.
+    ///
+    /// Used to pick a unique port when first enabling Local transport so that
+    /// two projects never start with the same configured port, even when only
+    /// one of them is currently running.
+    pub fn claimed_local_ports() -> HashSet<u16> {
+        let current = Self::config_dir();
+        let Some(root) = Self::projects_root() else { return HashSet::new(); };
+        let mut ports = HashSet::new();
+        collect_claimed_ports(&root, &current, &mut ports);
+        ports
+    }
+}
+
+/// Recursive helper for `CommonConfig::claimed_local_ports`.
+///
+/// Walks `dir` looking for `common.toml` files. When one is found, parses
+/// it and records the local transport port (if any), then stops recursing
+/// into that directory. Directories containing `dir == skip` are skipped.
+fn collect_claimed_ports(dir: &Path, skip: &Path, ports: &mut HashSet<u16>) {
+    let toml_path = dir.join("common.toml");
+    if toml_path.exists() {
+        if dir != skip {
+            if let Ok(text) = fs::read_to_string(&toml_path) {
+                if let Ok(cfg) = toml::from_str::<CommonConfig>(&text) {
+                    if let Some(tc) = cfg.transports.get("local") {
+                        if let Some(port) = tc.port {
+                            ports.insert(port);
+                        }
+                    }
+                }
+            }
+        }
+        return; // Don't recurse inside a project dir
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                collect_claimed_ports(&entry.path(), skip, ports);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -475,5 +542,60 @@ mod tests {
         let mut cfg = CommonConfig::default();
         cfg.transports.insert("local".to_string(), TransportConfig { enabled: false, ..Default::default() });
         assert!(cfg.enabled_transports().is_empty());
+    }
+
+    #[test]
+    fn collect_claimed_ports_reads_siblings() {
+        let root = tempdir().unwrap();
+        let projects = root.path().join("projects");
+
+        // Project A: claims port 8765
+        let proj_a = projects.join("project-a");
+        std::fs::create_dir_all(&proj_a).unwrap();
+        let mut cfg_a = CommonConfig::default();
+        cfg_a.transports.insert("local".to_string(), TransportConfig {
+            enabled: true, port: Some(8765), ..Default::default()
+        });
+        cfg_a.save_to_dir(&proj_a).unwrap();
+
+        // Project B: claims port 8766
+        let proj_b = projects.join("project-b");
+        std::fs::create_dir_all(&proj_b).unwrap();
+        let mut cfg_b = CommonConfig::default();
+        cfg_b.transports.insert("local".to_string(), TransportConfig {
+            enabled: true, port: Some(8766), ..Default::default()
+        });
+        cfg_b.save_to_dir(&proj_b).unwrap();
+
+        // Project C (current): should see A and B as claimed
+        let proj_c = projects.join("project-c");
+        std::fs::create_dir_all(&proj_c).unwrap();
+
+        let mut claimed = HashSet::new();
+        collect_claimed_ports(&projects, &proj_c, &mut claimed);
+
+        assert!(claimed.contains(&8765), "port 8765 (project-a) should be claimed");
+        assert!(claimed.contains(&8766), "port 8766 (project-b) should be claimed");
+        assert!(!claimed.contains(&8767), "8767 is unclaimed");
+    }
+
+    #[test]
+    fn collect_claimed_ports_skips_current_project() {
+        let root = tempdir().unwrap();
+        let projects = root.path().join("projects");
+
+        // Current project has port 8765
+        let current = projects.join("current");
+        std::fs::create_dir_all(&current).unwrap();
+        let mut cfg = CommonConfig::default();
+        cfg.transports.insert("local".to_string(), TransportConfig {
+            enabled: true, port: Some(8765), ..Default::default()
+        });
+        cfg.save_to_dir(&current).unwrap();
+
+        let mut claimed = HashSet::new();
+        collect_claimed_ports(&projects, &current, &mut claimed);
+
+        assert!(!claimed.contains(&8765), "current project's own port must not be in claimed set");
     }
 }

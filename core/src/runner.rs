@@ -7,10 +7,23 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-/// Scan [preferred, preferred+50] and return the first port that can be bound
-/// on `addr`. Returns `preferred` unchanged if none succeed (the real bind will
-/// then fail with a clear OS-level error message).
-fn find_free_port(addr: &str, preferred: u16) -> u16 {
+/// Scan [preferred, preferred+50] and return the first port that:
+///   (a) is not claimed by any sibling project config, AND
+///   (b) can be bound on `addr`.
+///
+/// Falls back to a bind-only check if all ports in the range are claimed
+/// (edge case: many configured projects). Returns `preferred` if nothing
+/// succeeds (the real bind will then fail with a clear OS-level error).
+fn find_free_port(addr: &str, preferred: u16, claimed: &std::collections::HashSet<u16>) -> u16 {
+    // First pass: skip both claimed-by-config and actively-bound ports.
+    for port in preferred..=preferred.saturating_add(50) {
+        if !claimed.contains(&port) {
+            if std::net::TcpListener::bind(format!("{}:{}", addr, port)).is_ok() {
+                return port;
+            }
+        }
+    }
+    // Fallback: ignore the claimed set (handles >50 configured-project edge case).
     for port in preferred..=preferred.saturating_add(50) {
         if std::net::TcpListener::bind(format!("{}:{}", addr, port)).is_ok() {
             return port;
@@ -106,7 +119,8 @@ pub async fn run_bridge(
     if transport_name == "local" || transport_name == "tailscale-serve" {
         let default_port: u16 = if transport_name == "tailscale-serve" { 8766 } else { 8765 };
         let preferred = transport_cfg.port.unwrap_or(default_port);
-        let chosen = find_free_port(&bind_address, preferred);
+        let claimed = CommonConfig::claimed_local_ports();
+        let chosen = find_free_port(&bind_address, preferred, &claimed);
         if chosen != preferred {
             warn!(
                 "Port {} is already in use; switching to {} for '{}' transport. Config updated.",
@@ -347,11 +361,12 @@ pub async fn run_bridge(
 #[cfg(test)]
 mod tests {
     use super::find_free_port;
+    use std::collections::HashSet;
 
     #[test]
     fn find_free_port_returns_value_in_range() {
         // Pick a high ephemeral port unlikely to be in use.
-        let port = find_free_port("127.0.0.1", 19876);
+        let port = find_free_port("127.0.0.1", 19876, &HashSet::new());
         assert!(
             port >= 19876 && port <= 19876 + 50,
             "Expected port in [19876, 19926], got {}",
@@ -364,7 +379,7 @@ mod tests {
         // Bind a listener to occupy a specific port, then verify find_free_port skips it.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let occupied = listener.local_addr().unwrap().port();
-        let chosen = find_free_port("127.0.0.1", occupied);
+        let chosen = find_free_port("127.0.0.1", occupied, &HashSet::new());
         assert_ne!(chosen, occupied, "find_free_port must not return the occupied port");
         // The listener is still held, so chosen must be strictly higher.
         assert!(chosen > occupied, "Expected find_free_port to scan upward from {}", occupied);
@@ -377,7 +392,20 @@ mod tests {
         let free_port = listener.local_addr().unwrap().port();
         drop(listener); // release the port
         // Now free_port should be available; find_free_port should return it unchanged.
-        let chosen = find_free_port("127.0.0.1", free_port);
+        let chosen = find_free_port("127.0.0.1", free_port, &HashSet::new());
         assert_eq!(chosen, free_port, "find_free_port should return preferred when it is free");
+    }
+
+    #[test]
+    fn find_free_port_skips_claimed_port() {
+        // Bind a port to know its number, then release it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let free_port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Mark the port as claimed — it should be skipped even though it's free.
+        let claimed: HashSet<u16> = [free_port].into();
+        let chosen = find_free_port("127.0.0.1", free_port, &claimed);
+        assert_ne!(chosen, free_port, "find_free_port must skip a claimed port even when it is not bound");
     }
 }

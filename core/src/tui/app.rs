@@ -705,7 +705,9 @@ impl App {
         // Transport needs setup.
         match name {
             "local" => {
-                let tc = TransportConfig { enabled: true, port: Some(8765), tls: Some(true), ..Default::default() };
+                let claimed = CommonConfig::claimed_local_ports();
+                let port = (8765u16..).find(|p| !claimed.contains(p)).unwrap_or(8765);
+                let tc = TransportConfig { enabled: true, port: Some(port), tls: Some(true), ..Default::default() };
                 self.config.transports.insert("local".to_string(), tc);
                 let _ = self.config.save();
                 self.selected_transport = Some("local".to_string());
