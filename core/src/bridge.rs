@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response, ErrorResponse};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use subtle::ConstantTimeEq;
 use tracing::{debug, error, info, warn};
 
 use crate::agent_pool::AgentPool;
@@ -426,6 +427,11 @@ impl StdioBridge {
 }
 
 /// Handle a single connection (generic over stream type for TLS/non-TLS)
+/// Constant-time token comparison to prevent timing side-channel attacks.
+fn token_matches(provided: &str, expected: &str) -> bool {
+    bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+}
+
 /// This function first peeks at the HTTP request to determine if it's:
 /// 1. A pairing request (/pair/local) - respond with JSON
 /// 2. A webhook request (POST /webhook/<token>) - handle and return immediately
@@ -808,7 +814,6 @@ fn verify_hmac_sha256(secret: &str, body: &[u8], signature: &str) -> bool {
     let result = mac.finalize().into_bytes();
     // Constant-time comparison to prevent timing side-channel attacks.
     let expected_bytes = hex::decode(expected_hex).unwrap_or_default();
-    use subtle::ConstantTimeEq;
     result.ct_eq(expected_bytes.as_slice()).into()
 }
 
@@ -939,7 +944,7 @@ where
                 .map(|t| t.to_string());
 
             let token_valid = header_token.as_deref()
-                .map(|t| t == expected_token)
+                .map(|t| token_matches(t, expected_token))
                 .unwrap_or(false);
 
             // Also check query string as fallback
@@ -955,7 +960,7 @@ where
             };
 
             let query_token_valid = query_token.as_deref()
-                .map(|t| t == expected_token)
+                .map(|t| token_matches(t, expected_token))
                 .unwrap_or(false);
 
             if !token_valid && !query_token_valid {
@@ -967,7 +972,7 @@ where
             }
 
             // Store the validated token for pool routing
-            if let Some(t) = header_token.filter(|t| t == expected_token).or(query_token.filter(|t| t == expected_token)) {
+            if let Some(t) = header_token.filter(|t| token_matches(t, expected_token)).or(query_token.filter(|t| token_matches(t, expected_token))) {
                 // We can't await here (sync closure), so use try_lock
                 if let Ok(mut guard) = extracted_token_clone.try_lock() {
                     *guard = t;
@@ -2791,6 +2796,33 @@ async fn files_content_response(working_dir: &std::path::Path, path: &str) -> St
                 }).to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn token_matches_accepts_correct_token() {
+        assert!(token_matches("abc123", "abc123"));
+    }
+
+    #[test]
+    fn token_matches_rejects_wrong_token() {
+        assert!(!token_matches("wrong", "abc123"));
+    }
+
+    #[test]
+    fn token_matches_rejects_empty_vs_nonempty() {
+        assert!(!token_matches("", "abc123"));
+        assert!(!token_matches("abc123", ""));
+    }
+
+    #[test]
+    fn token_matches_rejects_prefix() {
+        // A token that is a prefix of the expected must not match
+        assert!(!token_matches("abc", "abc123"));
     }
 }
 
