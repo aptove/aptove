@@ -197,7 +197,8 @@ pub async fn run_bridge(
                     push_cfg.token_url.clone(),
                     push_cfg.client_id.clone(),
                     push_cfg.client_secret.clone(),
-                );
+                )
+                .with_generic_title(config.push_generic_title);
             info!("Push relay: JWT auth (client_id={}, relay={})", push_cfg.client_id, push_cfg.url);
             Some(std::sync::Arc::new(client))
         } else {

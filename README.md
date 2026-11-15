@@ -273,7 +273,7 @@ echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | claude-code-acp
 
 Aptove works with any agent that implements the [Agent Client Protocol](https://agentclientprotocol.com). Tested agents include:
 
-- `claude-code-acp` — Claude (install: `npm install -g @agentclientprotocol/claude-agent-acp`, then run `claude` and `/login`)
+- `claude-code-acp` — Claude (install: `npm install -g @agentclientprotocol/claude-agent-acp@0.101.0`, then run `claude` and `/login`)
 - `copilot --acp` — GitHub Copilot CLI
 - `gemini --experimental-acp` — Google Gemini CLI
 - `goose acp` — Block's Goose

@@ -13,3 +13,5 @@ installers = ["shell", "powershell"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Allow customized CI workflow (don't fail if workflow differs from generated)
 allow-dirty = ["ci"]
+# Generate GitHub build attestations for all release artifacts
+github-attestations = true

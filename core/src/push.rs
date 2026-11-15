@@ -30,6 +30,10 @@ pub struct PushRelayClient {
     client_id: Option<String>,
     client_secret: Option<String>,
     jwt_cache: Arc<RwLock<Option<JwtCache>>>,
+    /// When true (default), the notification title is "Aptove" instead of the
+    /// agent name, to avoid leaking potentially-sensitive folder names to the
+    /// push relay, Apple APNs, or Google FCM.
+    generic_title: bool,
 }
 
 /// Request to register a device token with the relay
@@ -92,7 +96,17 @@ impl PushRelayClient {
             client_id: None,
             client_secret: None,
             jwt_cache: Arc::new(RwLock::new(None)),
+            generic_title: true,
         }
+    }
+
+    /// Override whether the notification title is the generic "Aptove" string
+    /// (default: `true`).  Set to `false` to use the actual agent name as the
+    /// title; note that this sends the agent name to the push relay and from
+    /// there to Apple APNs or Google FCM.
+    pub fn with_generic_title(mut self, v: bool) -> Self {
+        self.generic_title = v;
+        self
     }
 
     /// Configure JWT authentication credentials from the token service.
@@ -291,8 +305,13 @@ impl PushRelayClient {
         let url = format!("{}/push", self.relay_url);
         let mut data = HashMap::new();
         data.insert("agentName".to_string(), agent_name.to_string());
+        let title = if self.generic_title {
+            "Aptove".to_string()
+        } else {
+            agent_name.to_string()
+        };
         let body = PushRequest {
-            title: agent_name.to_string(),
+            title,
             body: "Your agent has new activity".to_string(),
             data: Some(data),
         };
