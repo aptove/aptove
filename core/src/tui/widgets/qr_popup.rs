@@ -154,10 +154,27 @@ pub fn render_qr_popup(
     if text_mode {
         render_text_fields(frame, inner, url);
     } else {
+        // Reserve the last line for a security warning.
+        let qr_area = Rect {
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        let warn_area = Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        };
         let text = Text::raw(qr_string);
         let para = Paragraph::new(text)
             .style(Style::default().bg(Color::Black).fg(Color::White));
-        frame.render_widget(para, inner);
+        frame.render_widget(para, qr_area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "⚠  Do not show this QR on a shared or recorded screen",
+                Style::default().fg(Color::Yellow),
+            )),
+            warn_area,
+        );
     }
 }
 
