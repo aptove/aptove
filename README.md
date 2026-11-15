@@ -306,6 +306,7 @@ cargo test               # Run tests
 [![Contributors](https://contrib.rocks/image?repo=aptove/aptove)](https://github.com/aptove/aptove/graphs/contributors)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to learn how to contribute to the project.
+
 ---
 
 ## Security Hall of Fame
@@ -313,6 +314,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to learn how to contribute to the project
 *No entries yet — be the first.*
 
 See [SECURITY.md](SECURITY.md) to learn how to report a vulnerability.
+
 ---
 
 ## License
