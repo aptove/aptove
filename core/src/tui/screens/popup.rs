@@ -39,6 +39,8 @@ pub enum PopupKind {
     PushConfig { step: PushPopupStep },
     /// Transport failed — shown instead of QR when the bridge is not running.
     TransportError,
+    /// Confirmation prompt before rotating the auth token.
+    RotateToken,
 }
 
 
@@ -64,6 +66,9 @@ pub fn render_popup(
         }
         PopupKind::TransportError => {
             render_transport_error_popup(frame);
+        }
+        PopupKind::RotateToken => {
+            render_rotate_token_popup(frame);
         }
     }
 }
@@ -337,6 +342,39 @@ fn render_transport_error_popup(frame: &mut Frame) {
 
     frame.render_widget(
         Paragraph::new("Esc to close")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
+    );
+}
+
+// ── Rotate token confirmation ─────────────────────────────────────────────────
+
+fn render_rotate_token_popup(frame: &mut Frame) {
+    use ratatui::widgets::Wrap;
+    let area = centered_rect(56, 36, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Rotate Auth Token ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Paragraph::new(
+            "Generate a new auth token?\n\n\
+             All paired devices will be disconnected\n\
+             and must re-scan the QR code to reconnect.\n\n\
+             All other settings are preserved."
+        )
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 2, y: inner.y + 1, width: inner.width.saturating_sub(4), height: inner.height.saturating_sub(3) },
+    );
+
+    frame.render_widget(
+        Paragraph::new("⏎  Rotate  ·  Esc  Cancel")
             .style(Style::default().fg(Color::DarkGray)),
         Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
     );

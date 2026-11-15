@@ -290,13 +290,30 @@ Run `aptove` and pick an agent from the setup wizard, or change it at any time v
 - **`common.toml`**: contains all secrets. Permissions are set to `0600` automatically. Keep it secure.
 - **Agent command**: saved to `agent_command` in `common.toml` by the setup wizard. It can be changed at any time via the `/agent` TUI command. Aptove Router is an operator tool: whoever can invoke it already has local shell access, so the agent command is implicitly trusted to the same degree as any other command that user could run.
 
-To rotate credentials (invalidates all paired devices), delete `common.toml` from the config directory for the project, then relaunch:
+### Rotating the auth token
+
+Run `/rotate-token` in the TUI. This generates a new token, saves it to `common.toml`, and restarts the bridge. All paired devices are immediately disconnected and must re-scan the QR code to reconnect. All other settings (agent ID, agent command, push credentials) are preserved.
+
+If Aptove is not running, edit `common.toml` directly — change the `auth_token` value to a new random string — then relaunch. The startup log prints the config directory path.
+
+To reset **all** configuration (agent ID and all credentials — nuclear option):
 
 ```bash
 # macOS / Linux — replace the path with your actual project path
 rm ~/.aptove/projects/$(pwd | sed 's|^/||')/common.toml
 aptove
 ```
+
+This invalidates every paired device and starts fresh.
+
+### Lost or stolen phone
+
+If a device is lost or stolen:
+
+1. Run `/rotate-token` in the TUI.
+2. The old token is immediately invalid — any reconnect attempt from the stolen device receives HTTP 401.
+3. Re-pair your remaining devices by scanning the new QR code (`/qr`).
+4. If push notifications were configured, the stolen device's push token is still registered. To remove it, go to [dash.aptove.com](https://dash.aptove.com), delete the push client, and reconfigure push on your other devices via `/push`.
 
 ---
 

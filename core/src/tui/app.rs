@@ -48,6 +48,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/push",        "Configure push notifications"),
     ("/keep-alive",  "Toggle to prevent the computer to sleep"),
     ("/log-level",   "Change log verbosity (default: WARN)"),
+    ("/rotate-token","Rotate auth token (disconnects all paired devices)"),
     ("/quit",        "Exit Aptove"),
 ];
 
@@ -779,6 +780,23 @@ impl App {
         self.needs_clear = true;
     }
 
+    /// Stop the running bridge and restart it with the current config.
+    /// Used by `/rotate-token` and similar commands that change config without
+    /// going through the wizard flow.
+    fn trigger_restart(&mut self) {
+        self.show_qr_on_ready = true;
+        self.auto_retry = true;
+        self.retry_count = 0;
+        if let Some(tx) = self.bridge_shutdown.take() {
+            let _ = tx.send(());
+            self.transport_up = false;
+            self.restart_pending = true;
+        } else {
+            self.restart_pending = false;
+            self.start_bridge();
+        }
+    }
+
     fn finish_wizard(&mut self) {
         self.wizard = None;
         self.screen = Screen::Running;
@@ -1192,6 +1210,9 @@ impl App {
                 self.screen = Screen::Wizard;
                 self.needs_clear = true;
             }
+            "/rotate-token" => {
+                self.popup = Some(PopupKind::RotateToken);
+            }
             other => {
                 self.log_push(format!("Unknown command: {other}  (type / for autocomplete)"));
             }
@@ -1270,6 +1291,24 @@ impl App {
                             }
                         }
                     }
+                }
+                _ => {}
+            }
+        }
+        Some(PopupKind::RotateToken) => {
+            match key.code {
+                KeyCode::Enter => {
+                    self.close_popup();
+                    self.config.auth_token = CommonConfig::generate_auth_token();
+                    if let Err(e) = self.config.save() {
+                        self.log_push_warn(format!("Failed to save rotated token: {e}"));
+                    } else {
+                        self.log_push("Auth token rotated — reconnecting all transports.".to_string());
+                        self.trigger_restart();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.close_popup();
                 }
                 _ => {}
             }

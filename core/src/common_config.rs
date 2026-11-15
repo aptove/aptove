@@ -599,4 +599,21 @@ mod tests {
 
         assert!(!claimed.contains(&8765), "current project's own port must not be in claimed set");
     }
+
+    #[test]
+    fn generate_auth_token_is_unique() {
+        let a = CommonConfig::generate_auth_token();
+        let b = CommonConfig::generate_auth_token();
+        assert_ne!(a, b, "Two consecutive generate_auth_token() calls must return different values");
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+    }
+
+    #[test]
+    fn ensure_auth_token_does_not_overwrite_existing() {
+        let mut cfg = CommonConfig::default();
+        cfg.auth_token = "existing-token".to_string();
+        cfg.ensure_auth_token();
+        assert_eq!(cfg.auth_token, "existing-token", "ensure_auth_token must not replace a non-empty token");
+    }
 }
