@@ -1,6 +1,6 @@
 //! Scheduled task management — persistence, scheduling, and execution.
 //!
-//! Tasks are JSON files stored in `.aptove/tasks/`. Each task runs either once
+//! Tasks are JSON files stored in `~/.aptove/projects/<cwd>/tasks/`. Each task runs either once
 //! at a specific time or on a recurring schedule (daily / weekly / monthly).
 //! The scheduler wakes every 60 s, finds due tasks, and sends them to the agent
 //! as regular `session/new` + `session/prompt` sequences.

@@ -146,7 +146,7 @@ pub struct CommonConfig {
     #[serde(default = "log_file_max_mb_default")]
     pub log_file_max_mb: u64,
 
-    /// Number of rotated log files to keep in .aptove/logs/ (default: 5).
+    /// Number of rotated log files to keep in `~/.aptove/projects/<cwd>/logs/` (default: 5).
     #[serde(default = "log_file_count_default")]
     pub log_file_count: usize,
 

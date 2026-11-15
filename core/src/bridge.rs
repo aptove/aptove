@@ -130,7 +130,7 @@ pub struct StdioBridge {
     agent_name: String,
     /// Config directory for persisting name changes received via `bridge/setAgentName`.
     config_dir: Option<PathBuf>,
-    /// Directory for scheduled task JSON files (`.aptove/tasks/`).
+    /// Directory for scheduled task JSON files (`~/.aptove/projects/<cwd>/tasks/`).
     tasks_dir: Option<PathBuf>,
 }
 
