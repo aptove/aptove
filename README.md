@@ -303,9 +303,7 @@ cargo test               # Run tests
 
 ## Contributors
 
-<a href="https://github.com/saltukalakus">
-  <img src="https://github.com/saltukalakus.png" width="60" height="60" alt="saltukalakus" title="saltukalakus" style="border-radius: 50%" />
-</a>
+[![Contributors](https://contrib.rocks/image?repo=aptove/aptove)](https://github.com/aptove/aptove/graphs/contributors)
 
 ---
 
