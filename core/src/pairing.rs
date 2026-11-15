@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
@@ -78,8 +79,12 @@ pub struct PairingManager {
     code_state: Mutex<CodeState>,
     /// Whether the code has been successfully used
     used: AtomicBool,
-    /// Number of failed validation attempts (for rate limiting)
-    attempts: AtomicU32,
+    /// Number of failed validation attempts per client IP (for rate limiting).
+    /// Keyed by the string representation of the connecting IP address so that
+    /// different devices have independent counters.  Under `tailscale serve` all
+    /// tailnet peers appear as 127.0.0.1 (the daemon does not inject
+    /// X-Forwarded-For), so the counter is shared across the tailnet in that case.
+    attempts: Mutex<HashMap<String, u32>>,
     /// Connection details to return on successful pairing
     websocket_url: String,
     auth_token: String,
@@ -117,7 +122,7 @@ impl PairingManager {
             agent_id,
             code_state: Mutex::new(CodeState { code, created_at: Instant::now() }),
             used: AtomicBool::new(false),
-            attempts: AtomicU32::new(0),
+            attempts: Mutex::new(HashMap::new()),
             websocket_url,
             auth_token,
             cert_fingerprint,
@@ -204,15 +209,20 @@ impl PairingManager {
         state.created_at = Instant::now();
         drop(state);
         self.used.store(false, Ordering::SeqCst);
-        self.attempts.store(0, Ordering::SeqCst);
+        self.attempts.lock().unwrap().clear();
     }
 
-    /// Validate a pairing code and return connection details if valid
-    pub fn validate(&self, code: &str) -> Result<PairingResponse, PairingError> {
-        // Check rate limiting first
-        let attempts = self.attempts.load(Ordering::SeqCst);
-        if attempts >= self.max_attempts {
-            return Err(PairingError::RateLimited);
+    /// Validate a pairing code and return connection details if valid.
+    ///
+    /// `client_ip` is used to track failed attempts per source address so that
+    /// one misbehaving device cannot exhaust the counter for other devices.
+    pub fn validate(&self, code: &str, client_ip: &str) -> Result<PairingResponse, PairingError> {
+        // Check rate limiting first (per client IP)
+        {
+            let attempts = self.attempts.lock().unwrap();
+            if attempts.get(client_ip).copied().unwrap_or(0) >= self.max_attempts {
+                return Err(PairingError::RateLimited);
+            }
         }
 
         // Check if already used
@@ -232,7 +242,7 @@ impl PairingManager {
         let code_matches = code.as_bytes().ct_eq(state.code.as_bytes());
         drop(state);
         if code_matches.unwrap_u8() == 0 {
-            self.attempts.fetch_add(1, Ordering::SeqCst);
+            *self.attempts.lock().unwrap().entry(client_ip.to_string()).or_insert(0) += 1;
             return Err(PairingError::InvalidCode);
         }
 
@@ -293,7 +303,7 @@ mod tests {
         );
 
         let code = manager.get_code().to_string();
-        let result = manager.validate(&code);
+        let result = manager.validate(&code, "127.0.0.1");
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -313,7 +323,7 @@ mod tests {
             "/tmp/test".to_string(),
         );
 
-        let result = manager.validate("000000");
+        let result = manager.validate("000000", "127.0.0.1");
         assert!(matches!(result, Err(PairingError::InvalidCode)));
     }
 
@@ -332,10 +342,10 @@ mod tests {
         let code = manager.get_code().to_string();
 
         // First use should succeed
-        assert!(manager.validate(&code).is_ok());
+        assert!(manager.validate(&code, "127.0.0.1").is_ok());
 
         // Second use should fail
-        let result = manager.validate(&code);
+        let result = manager.validate(&code, "127.0.0.1");
         assert!(matches!(result, Err(PairingError::CodeAlreadyUsed)));
     }
 
@@ -351,14 +361,39 @@ mod tests {
             "/tmp/test".to_string(),
         );
 
-        // Make 5 failed attempts
+        // Make 5 failed attempts from the same IP
         for _ in 0..5 {
-            let _ = manager.validate("000000");
+            let _ = manager.validate("000000", "127.0.0.1");
         }
 
-        // Next attempt should be rate limited
-        let result = manager.validate("000000");
+        // Next attempt from the same IP should be rate limited
+        let result = manager.validate("000000", "127.0.0.1");
         assert!(matches!(result, Err(PairingError::RateLimited)));
+    }
+
+    #[test]
+    fn test_per_ip_rate_limiting_is_isolated() {
+        let manager = PairingManager::new_with_cf(
+            "test-agent-id".to_string(),
+            "wss://192.168.1.100:8080".to_string(),
+            "test-token".to_string(),
+            None, None, None,
+            "/tmp/test".to_string(),
+        );
+
+        // Exhaust all attempts from device-a
+        for _ in 0..5 {
+            let _ = manager.validate("000000", "100.64.1.1");
+        }
+        // device-a is rate limited
+        assert!(matches!(
+            manager.validate("000000", "100.64.1.1"),
+            Err(PairingError::RateLimited)
+        ));
+
+        // device-b (different IP) is not affected — it still gets InvalidCode, not RateLimited
+        let result = manager.validate("000000", "100.64.1.2");
+        assert!(matches!(result, Err(PairingError::InvalidCode)));
     }
 
     #[test]
@@ -466,7 +501,7 @@ mod tests {
             "/tmp/test".to_string(),
         );
         let code = manager.get_code();
-        manager.validate(&code).unwrap();
+        manager.validate(&code, "127.0.0.1").unwrap();
         assert!(manager.is_used(), "Manager should be marked used after validate");
 
         manager.renew();
@@ -484,12 +519,12 @@ mod tests {
         );
         // Exhaust 3 attempts with a wrong code.
         for _ in 0..3 {
-            let _ = manager.validate("000000");
+            let _ = manager.validate("000000", "127.0.0.1");
         }
         manager.renew();
         // After renew the new code should be validatable (attempt counter reset).
         let new_code = manager.get_code();
-        assert!(manager.validate(&new_code).is_ok(), "After renew, valid code should succeed");
+        assert!(manager.validate(&new_code, "127.0.0.1").is_ok(), "After renew, valid code should succeed");
     }
 
     #[test]

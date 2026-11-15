@@ -427,6 +427,44 @@ impl StdioBridge {
 }
 
 /// Handle a single connection (generic over stream type for TLS/non-TLS)
+/// Extract the effective client IP from an HTTP request.
+///
+/// When the socket address is a loopback IP (indicating a local reverse proxy such
+/// as nginx or another forwarding layer), the `X-Forwarded-For` or `X-Real-IP`
+/// header value is used as the effective IP.  For `X-Forwarded-For` lists the
+/// first entry (original client) is taken.
+///
+/// **Tailscale limitation:** `tailscale serve` does not inject `X-Forwarded-For`.
+/// All connections through Tailscale serve appear as `127.0.0.1`, so per-IP
+/// limits apply to the entire tailnet rather than individual tailnet nodes.
+/// If per-device isolation is needed, restrict access via Tailscale ACLs.
+fn extract_forwarded_ip<'a>(request: &'a str, socket_ip: &'a str) -> &'a str {
+    // Only trust forwarding headers when the connection comes from localhost
+    // to avoid IP spoofing by external clients.
+    if socket_ip != "127.0.0.1" && socket_ip != "::1" {
+        return socket_ip;
+    }
+    for line in request.lines().skip(1) {
+        if line.is_empty() { break; }
+        let lower = line.to_ascii_lowercase();
+        let value = if lower.starts_with("x-forwarded-for:") {
+            &line["x-forwarded-for:".len()..]
+        } else if lower.starts_with("x-real-ip:") {
+            &line["x-real-ip:".len()..]
+        } else {
+            continue;
+        };
+        // X-Forwarded-For may be a comma-separated list; take the leftmost (original) IP.
+        if let Some(ip) = value.split(',').next() {
+            let ip = ip.trim();
+            if !ip.is_empty() {
+                return ip;
+            }
+        }
+    }
+    socket_ip
+}
+
 /// Constant-time token comparison to prevent timing side-channel attacks.
 fn token_matches(provided: &str, expected: &str) -> bool {
     bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
@@ -468,10 +506,14 @@ where
     let request_str = String::from_utf8_lossy(request_data);
     let first_line = request_str.lines().next().unwrap_or("");
 
+    // Extract the effective client IP from forwarding headers when behind a local
+    // reverse proxy.  Falls back to the socket IP for direct connections.
+    let effective_ip = extract_forwarded_ip(&request_str, &client_ip);
+
     // Check if this is a pairing request
     if first_line.starts_with("GET") && first_line.contains("/pair/") {
         info!("🔗 Pairing request received");
-        return handle_pairing_request(&mut stream, &request_str, pairing_manager).await;
+        return handle_pairing_request(&mut stream, &request_str, pairing_manager, effective_ip).await;
     }
 
     // Check if this is a webhook request (POST /webhook/<token>)
@@ -484,7 +526,7 @@ where
             &agent_handle,
             webhook_resolver,
             webhook_rate_limiter,
-            client_ip,
+            effective_ip.to_string(),
         )
         .await;
     }
@@ -517,6 +559,7 @@ async fn handle_pairing_request<S>(
     stream: &mut S,
     request: &str,
     pairing_manager: Option<Arc<PairingManager>>,
+    client_ip: &str,
 ) -> Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -548,7 +591,7 @@ where
     };
 
     // Validate the pairing code
-    match manager.validate(&code) {
+    match manager.validate(&code, client_ip) {
         Ok(pairing_response) => {
             info!("✅ Pairing successful");
             let json = serde_json::to_string(&pairing_response).unwrap_or_default();
@@ -2796,6 +2839,67 @@ async fn files_content_response(working_dir: &std::path::Path, path: &str) -> St
                 }).to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod forwarded_ip_tests {
+    use super::*;
+
+    fn req(headers: &str) -> String {
+        format!("GET / HTTP/1.1\r\n{}\r\n\r\n", headers)
+    }
+
+    #[test]
+    fn direct_connection_uses_socket_ip() {
+        let r = req("");
+        assert_eq!(extract_forwarded_ip(&r, "192.168.1.50"), "192.168.1.50");
+    }
+
+    #[test]
+    fn non_loopback_ignores_forwarded_header() {
+        // A non-loopback socket IP means the client connected directly — do not
+        // trust any X-Forwarded-For it may have injected.
+        let r = req("X-Forwarded-For: 10.0.0.1");
+        assert_eq!(extract_forwarded_ip(&r, "192.168.1.50"), "192.168.1.50");
+    }
+
+    #[test]
+    fn loopback_reads_x_forwarded_for() {
+        let r = req("X-Forwarded-For: 100.64.1.5");
+        assert_eq!(extract_forwarded_ip(&r, "127.0.0.1"), "100.64.1.5");
+    }
+
+    #[test]
+    fn loopback_takes_first_ip_from_list() {
+        let r = req("X-Forwarded-For: 100.64.1.5, 10.0.0.1");
+        assert_eq!(extract_forwarded_ip(&r, "127.0.0.1"), "100.64.1.5");
+    }
+
+    #[test]
+    fn loopback_reads_x_real_ip() {
+        let r = req("X-Real-IP: 100.64.2.9");
+        assert_eq!(extract_forwarded_ip(&r, "127.0.0.1"), "100.64.2.9");
+    }
+
+    #[test]
+    fn header_matching_is_case_insensitive() {
+        let r = req("x-forwarded-for: 100.64.3.1");
+        assert_eq!(extract_forwarded_ip(&r, "127.0.0.1"), "100.64.3.1");
+    }
+
+    #[test]
+    fn loopback_without_header_falls_back_to_socket_ip() {
+        // tailscale serve does not inject X-Forwarded-For; this is the expected
+        // path for Tailscale transport — the whole tailnet shares 127.0.0.1.
+        let r = req("Host: my-laptop.tail1234.ts.net");
+        assert_eq!(extract_forwarded_ip(&r, "127.0.0.1"), "127.0.0.1");
+    }
+
+    #[test]
+    fn ipv6_loopback_is_also_trusted() {
+        let r = req("X-Forwarded-For: 100.64.1.7");
+        assert_eq!(extract_forwarded_ip(&r, "::1"), "100.64.1.7");
     }
 }
 
