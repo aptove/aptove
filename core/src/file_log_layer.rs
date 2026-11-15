@@ -10,9 +10,42 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+
+/// When `false` (the default), message content is stripped from log lines —
+/// only byte counts and method names are recorded.  Set to `true` via
+/// `log_message_content = true` in `common.toml` to include raw content for
+/// debugging.  **Never enable in production: prompts and agent replies will
+/// appear in log files readable by any process that can open them.**
+static LOG_MESSAGE_CONTENT: AtomicBool = AtomicBool::new(false);
+
+/// Set whether message content should be included in log output.
+/// Call once at startup after loading `CommonConfig`.
+pub fn set_log_message_content(enabled: bool) {
+    LOG_MESSAGE_CONTENT.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns `": <first max_chars chars of text>"` when content logging is
+/// enabled, or an empty string otherwise.  Use this to append message content
+/// to a log line without hard-coding the content into the format string.
+pub fn content_suffix(text: &str, max_chars: usize) -> String {
+    if LOG_MESSAGE_CONTENT.load(Ordering::Relaxed) {
+        format!(": {}", text.chars().take(max_chars).collect::<String>())
+    } else {
+        String::new()
+    }
+}
+
+/// Returns the first 8 characters of `token` followed by `"..."`.
+/// Use when logging device tokens or other opaque credentials so the log entry
+/// is useful for correlation without leaking the full value.
+pub fn redact_token(token: &str) -> String {
+    let visible = token.len().min(8);
+    format!("{}...", &token[..visible])
+}
 
 pub struct FileLogLayer {
     log_dir: PathBuf,
@@ -34,6 +67,17 @@ impl FileLogLayer {
     /// - `file_count`: number of files to keep (including the active one).
     pub fn new(log_dir: PathBuf, max_mb: u64, file_count: usize) -> Self {
         let _ = fs::create_dir_all(&log_dir);
+        // Restrict the log directory to owner-only so rotated files cannot be
+        // read by other local users even before we set per-file permissions.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&log_dir) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o700);
+                let _ = fs::set_permissions(&log_dir, perms);
+            }
+        }
 
         let log_path = log_dir.join("aptove.log");
         let (writer, written) = open_append(&log_path);
@@ -72,13 +116,28 @@ impl FileLogLayer {
 
 fn open_append(path: &PathBuf) -> (Option<BufWriter<File>>, u64) {
     let existing = path.metadata().map(|m| m.len()).unwrap_or(0);
-    let writer = OpenOptions::new()
+    let result = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
-        .ok()
-        .map(BufWriter::new);
-    (writer, existing)
+        .open(path);
+    match result {
+        Ok(file) => {
+            // Restrict to owner-read/write immediately after opening so the
+            // window where other users can read a newly created file is as
+            // small as possible.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = file.metadata() {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o600);
+                    let _ = file.set_permissions(perms);
+                }
+            }
+            (Some(BufWriter::new(file)), existing)
+        }
+        Err(_) => (None, existing),
+    }
 }
 
 impl<S: Subscriber> Layer<S> for FileLogLayer {

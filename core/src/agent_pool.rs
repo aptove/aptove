@@ -342,9 +342,9 @@ impl AgentPool {
             };
             {
                 debug!(
-                    "Pooled agent stdout ({} bytes): {}",
+                    "Pooled agent stdout ({} bytes){}",
                     line.len(),
-                    line.chars().take(200).collect::<String>()
+                    crate::file_log_layer::content_suffix(&line, 200)
                 );
 
                 // Attempt to send to broadcast channel
@@ -359,10 +359,10 @@ impl AgentPool {
                         if buffer_enabled {
                             let mut buf = overflow_for_stdout.lock().await;
                             if buf.len() < max_buffer {
-                                debug!("0 receivers — buffering message #{} ({}B): {}",
+                                debug!("0 receivers — buffering message #{} ({}B){}",
                                     buf.len() + 1,
                                     msg.len(),
-                                    msg.chars().take(120).collect::<String>());
+                                    crate::file_log_layer::content_suffix(&msg, 120));
                                 buf.push(msg);
                             } else {
                             }
@@ -403,7 +403,7 @@ impl AgentPool {
         tokio::spawn(async move {
             let mut lines = stderr_reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                debug!("Pooled agent stderr: {}", line);
+                debug!("Pooled agent stderr ({} bytes){}", line.len(), crate::file_log_layer::content_suffix(&line, 200));
             }
             debug!("Pooled agent stderr reader task ended");
         });

@@ -1145,7 +1145,7 @@ where
         if total > 0 {
             debug!("Replaying {} buffered message(s) after session resume", total);
             for (i, msg) in buffered.into_iter().enumerate() {
-                debug!("Buffered [{}/{}] ({}B): {}", i + 1, total, msg.len(), msg.chars().take(200).collect::<String>());
+                debug!("Buffered [{}/{}] ({}B){}", i + 1, total, msg.len(), crate::file_log_layer::content_suffix(&msg, 200));
                 if let Err(e) = ws_sender.send(Message::Text(msg.into())).await {
                     error!("Failed to replay buffered message: {}", e);
                 }
@@ -1258,8 +1258,8 @@ where
                     if msg.is_text() || msg.is_binary() {
                         let data = msg.into_data();
                         let mut text = String::from_utf8_lossy(&data).to_string();
-                        debug!("📥 Received from Mobile ({} bytes): {}", text.len(),
-                            text.chars().take(200).collect::<String>());
+                        debug!("📥 Received from Mobile ({} bytes){}", text.len(),
+                            crate::file_log_layer::content_suffix(&text, 200));
 
                         // Intercept bridge/registerPushToken and bridge/unregisterPushToken.
                         // These are bridge-protocol messages; never forward them to the agent.
@@ -1279,9 +1279,9 @@ where
                                             .unwrap_or(false);
 
                                         if already_registered {
-                                            debug!("📲 Push token already registered this session, skipping: token={}", device_token);
+                                            debug!("📲 Push token already registered this session, skipping: token={}", crate::file_log_layer::redact_token(device_token));
                                         } else {
-                                            info!("📲 Registering push token: platform={}, bundle_id={}, token={}", platform, bundle_id, device_token);
+                                            info!("📲 Registering push token: platform={}, bundle_id={}, token={}", platform, bundle_id, crate::file_log_layer::redact_token(device_token));
                                             let relay = Arc::clone(relay);
                                             let platform = platform.to_string();
                                             let device_token = device_token.to_string();
@@ -1889,9 +1889,9 @@ where
                                 }
                             } else if is_final {
                                 // Final response arrived but no <merged_memory> found — give up.
-                                warn!("🧠 Memory-update finished with no <merged_memory> block — file unchanged. Agent replied ({} bytes): {}",
+                                warn!("🧠 Memory-update finished with no <merged_memory> block — file unchanged. Agent replied ({} bytes){}",
                                     suppressed_text_buf.len(),
-                                    suppressed_text_buf.chars().take(500).collect::<String>());
+                                    crate::file_log_layer::content_suffix(&suppressed_text_buf, 500));
                                 suppressed_text_buf.clear();
                             }
                             debug!("🔇 Suppressed silent memory-update agent response (is_final={})", is_final);
@@ -1906,8 +1906,8 @@ where
                         && !line.contains("\"error\"");
 
                     debug!("ws_sender.send() attempting ({} bytes)", line.len());
-                    debug!("📤 Sending to Mobile ({} bytes): {}", line.len(),
-                        line.chars().take(200).collect::<String>());
+                    debug!("📤 Sending to Mobile ({} bytes){}", line.len(),
+                        crate::file_log_layer::content_suffix(&line, 200));
 
                     if let Err(e) = ws_sender.send(Message::Text(line.clone().into())).await {
                         warn!("ws_sender.send() FAILED — client disconnected: {}", e);
@@ -2216,9 +2216,8 @@ where
         }
 
         // It's some other request, not a session request — can't intercept
-        warn!("⚠️  Message is not session/new or session/load (method={:?}, has_id={}, raw={}), cannot intercept",
-            method, request.get("id").is_some(),
-            msg.chars().take(200).collect::<String>());
+        warn!("⚠️  Message is not session/new or session/load (method={:?}, has_id={}), cannot intercept",
+            method, request.get("id").is_some());
         return (false, false);
     }
 
@@ -2245,8 +2244,8 @@ where
     cached["id"] = request_id;
 
     let response_str = serde_json::to_string(&cached).unwrap_or_default();
-    debug!("🔄 Sending cached session response ({} bytes): {}", response_str.len(),
-        response_str.chars().take(200).collect::<String>());
+    debug!("🔄 Sending cached session response ({} bytes){}", response_str.len(),
+        crate::file_log_layer::content_suffix(&response_str, 200));
 
     if let Err(e) = ws_sender.send(Message::Text(response_str.into())).await {
         error!("Failed to send cached session response: {}", e);
@@ -2498,8 +2497,8 @@ where
                     if msg.is_text() || msg.is_binary() {
                         let raw = msg.into_data();
                         let data = String::from_utf8_lossy(&raw);
-                        debug!("📥 Received from Mobile ({} bytes): {}", data.len(),
-                            data.chars().take(200).collect::<String>());
+                        debug!("📥 Received from Mobile ({} bytes){}", data.len(),
+                            crate::file_log_layer::content_suffix(data.as_ref(), 200));
 
                         if let Err(e) = stdin_writer.write_all(data.as_bytes()).await {
                             error!("Failed to write to agent stdin: {}", e);
@@ -2540,8 +2539,8 @@ where
         info!("📖 Agent stdout reader task started");
 
         while let Ok(Some(line)) = lines.next_line().await {
-            info!("📤 Agent -> Mobile ({} bytes): {}", line.len(),
-                line.chars().take(200).collect::<String>());
+            info!("📤 Agent -> Mobile ({} bytes){}", line.len(),
+                crate::file_log_layer::content_suffix(&line, 200));
 
             if let Err(e) = ws_sender.send(Message::Text(line.into())).await {
                 let msg = e.to_string();

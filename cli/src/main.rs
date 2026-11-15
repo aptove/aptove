@@ -6,7 +6,7 @@ use tracing_subscriber::prelude::*;
 
 use aptove_core::common_config::CommonConfig;
 use aptove_core::transport;
-use aptove_core::file_log_layer::FileLogLayer;
+use aptove_core::file_log_layer::{self, FileLogLayer};
 use aptove_core::tui::{
     app::App,
     events::AppEvent,
@@ -35,6 +35,7 @@ async fn run_tui() -> Result<()> {
     let log_layer = TuiLogLayer::new(event_tx.clone(), Arc::clone(&log_level_arc));
     let logs_dir = CommonConfig::config_dir().join("logs");
     let file_log = FileLogLayer::new(logs_dir, config.log_file_max_mb, config.log_file_count);
+    file_log_layer::set_log_message_content(config.log_message_content);
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new("trace"))
         .with(log_layer)
