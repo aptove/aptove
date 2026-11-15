@@ -6,6 +6,7 @@ pub mod agent_pool;
 pub mod bridge;
 pub mod common_config;
 pub mod file_log_layer;
+pub mod file_permissions;
 pub mod pairing;
 pub mod push;
 pub mod qr;

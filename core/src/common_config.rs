@@ -341,13 +341,8 @@ impl CommonConfig {
         let path = dir.join("common.toml");
         let text = toml::to_string_pretty(self).context("Failed to serialize CommonConfig")?;
         fs::write(&path, &text).with_context(|| format!("Failed to write {:?}", path))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&path, perms)?;
-        }
+        crate::file_permissions::restrict_file_to_owner(&path)
+            .with_context(|| format!("Failed to set permissions on {:?}", path))?;
         Ok(())
     }
 

@@ -69,15 +69,7 @@ impl FileLogLayer {
         let _ = fs::create_dir_all(&log_dir);
         // Restrict the log directory to owner-only so rotated files cannot be
         // read by other local users even before we set per-file permissions.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(&log_dir) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o700);
-                let _ = fs::set_permissions(&log_dir, perms);
-            }
-        }
+        let _ = crate::file_permissions::restrict_dir_to_owner(&log_dir);
 
         let log_path = log_dir.join("aptove.log");
         let (writer, written) = open_append(&log_path);
@@ -125,15 +117,7 @@ fn open_append(path: &PathBuf) -> (Option<BufWriter<File>>, u64) {
             // Restrict to owner-read/write immediately after opening so the
             // window where other users can read a newly created file is as
             // small as possible.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = file.metadata() {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(0o600);
-                    let _ = file.set_permissions(perms);
-                }
-            }
+            let _ = crate::file_permissions::restrict_file_to_owner(path);
             (Some(BufWriter::new(file)), existing)
         }
         Err(_) => (None, existing),

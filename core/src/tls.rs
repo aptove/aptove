@@ -141,14 +141,9 @@ impl TlsConfig {
         fs::write(key_path, &key_pem)
             .context("Failed to write private key file")?;
 
-        // Set restrictive permissions on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(cert_path, perms.clone())?;
-            fs::set_permissions(key_path, perms)?;
-        }
+        // Set restrictive permissions (owner-only on all platforms)
+        crate::file_permissions::restrict_file_to_owner(cert_path)?;
+        crate::file_permissions::restrict_file_to_owner(key_path)?;
 
         info!("✅ TLS certificate generated and saved");
 
