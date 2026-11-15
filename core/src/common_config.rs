@@ -480,6 +480,7 @@ mod tests {
         assert!(cfg.keep_alive);
         assert!(cfg.agent_id.is_empty());
         assert!(cfg.auth_token.is_empty());
+        assert!(!cfg.log_message_content, "log_message_content must default to false");
     }
 
     #[test]

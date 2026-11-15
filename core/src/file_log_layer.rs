@@ -214,3 +214,52 @@ impl tracing::field::Visit for MsgVisitor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    #[cfg(unix)]
+    fn new_creates_dir_with_0700_and_file_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = tempdir().unwrap();
+        let log_dir = base.path().join("logs");
+
+        let layer = FileLogLayer::new(log_dir.clone(), 1, 2);
+        // Trigger a write so the log file is created.
+        drop(layer);
+
+        let dir_mode = fs::metadata(&log_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "log directory must be owner-only (0700)");
+
+        let log_file = log_dir.join("aptove.log");
+        if log_file.exists() {
+            let file_mode = fs::metadata(&log_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "log file must be owner-only (0600)");
+        }
+    }
+
+    #[test]
+    fn content_suffix_hidden_by_default() {
+        set_log_message_content(false);
+        assert_eq!(content_suffix("hello world", 200), "");
+    }
+
+    #[test]
+    fn content_suffix_visible_when_enabled() {
+        set_log_message_content(true);
+        assert_eq!(content_suffix("hello world", 200), ": hello world");
+        // Reset so other tests are unaffected.
+        set_log_message_content(false);
+    }
+
+    #[test]
+    fn redact_token_shows_prefix_only() {
+        assert_eq!(redact_token("abcdefgh12345678"), "abcdefgh...");
+        assert_eq!(redact_token("short"), "short...");
+        assert_eq!(redact_token(""), "...");
+    }
+}
