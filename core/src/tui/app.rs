@@ -278,7 +278,9 @@ impl App {
         let key_tx = self.event_tx.clone();
         std::thread::spawn(move || loop {
             match crossterm::event::read() {
-                Ok(crossterm::event::Event::Key(key)) => {
+                Ok(crossterm::event::Event::Key(key))
+                    if key.kind == crossterm::event::KeyEventKind::Press =>
+                {
                     if key_tx.blocking_send(AppEvent::Key(key)).is_err() { break; }
                 }
                 Ok(crossterm::event::Event::Mouse(mouse)) => {
