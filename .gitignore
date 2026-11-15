@@ -25,8 +25,5 @@ target/
 .env
 .env.local
 
-# Aptove Router Config
-.aptove/
-
 # Wrangler CLI cache (local developer state, not repo content)
 .wrangler/

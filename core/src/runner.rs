@@ -68,7 +68,7 @@ pub async fn run_bridge(
             .open(&lock_path)
             .with_context(|| format!("Failed to open aptove lock file: {}", lock_path.display()))?;
         lock_file.try_lock_exclusive().map_err(|_| anyhow::anyhow!(
-            "Another Aptove instance is already running from this folder."
+            "Another Aptove instance is already running for this directory."
         ))?;
         lock_file
     };

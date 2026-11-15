@@ -3,6 +3,7 @@
 //! Stored as `common.toml` in the bridge config directory.
 
 use anyhow::{Context, Result};
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -237,13 +238,39 @@ impl CommonConfig {
     }
 
     /// Config directory (system default or custom override).
+    ///
+    /// Default location is keyed by the current working directory so each
+    /// project gets an isolated config, but nothing is written into the
+    /// project folder itself:
+    ///
+    /// - macOS / Linux: `~/.aptove/projects/<cwd_without_leading_slash>/`
+    ///   e.g. `~/.aptove/projects/Users/alice/code/my-project/`
+    /// - Windows: `%APPDATA%\Aptove\projects\<cwd_without_drive_prefix>\`
+    ///
+    /// Pass `--config-dir` (calls `set_config_dir`) to override.
     pub fn config_dir() -> PathBuf {
         let dir = if let Some(custom) = COMMON_CUSTOM_CONFIG_DIR.get() {
             custom.clone()
         } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".aptove")
+            #[cfg(windows)]
+            let base = BaseDirs::new()
+                .map(|b| b.data_dir().to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming"))
+                .join("Aptove");
+            #[cfg(not(windows))]
+            let base = BaseDirs::new()
+                .map(|b| b.home_dir().join(".aptove"))
+                .unwrap_or_else(|| PathBuf::from("/tmp/.aptove"));
+
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            // Strip leading root dir (`/`) or Windows drive prefix (`C:\`) so
+            // the path can be joined cleanly under the base directory.
+            let cwd_rel: PathBuf = cwd.components()
+                .filter(|c| !matches!(c,
+                    std::path::Component::RootDir | std::path::Component::Prefix(_)))
+                .collect();
+            base.join("projects").join(cwd_rel)
         };
         fs::create_dir_all(&dir).ok();
         dir

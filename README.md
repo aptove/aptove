@@ -48,7 +48,12 @@ Scan the QR code with the mobile app to connect.
 
 All settings live in `common.toml`, created automatically by the setup wizard on first run.
 
-**Default location:** `.aptove/` directory inside the working directory where Aptove is launched.
+**Default location:** `~/.aptove/projects/<your-project-path>/` — keyed by the directory where Aptove is launched, but stored in your home folder so nothing lands in the project folder itself.
+
+| Platform | Example path |
+|----------|-------------|
+| macOS / Linux | `~/.aptove/projects/Users/alice/code/my-project/` |
+| Windows | `%APPDATA%\Aptove\projects\Users\alice\code\my-project\` |
 
 #### Example `common.toml`
 
@@ -87,7 +92,7 @@ No transports are pre-enabled. The setup wizard asks you to choose one on first 
 
 #### Config Directory Files
 
-All Aptove Router state lives in the config directory. These files are created automatically on first run:
+All Aptove Router state lives in `~/.aptove/projects/<your-project-path>/`. These files are created automatically on first run:
 
 | File | Purpose |
 |------|---------|
@@ -129,7 +134,7 @@ Type these in the input bar while Aptove Router is running:
 
 Aptove Router can run prompts on a schedule — useful for recurring summaries, daily digests, or any task that should fire automatically without a user sitting at the keyboard.
 
-Tasks are managed from the mobile app (Tasks tab) or by writing JSON files directly to `.aptove/tasks/`. Each task has a name, a prompt, and a schedule (cron expression or one-time timestamp).
+Tasks are managed from the mobile app (Tasks tab) or by writing JSON files directly to `~/.aptove/projects/<your-project-path>/tasks/`. Each task has a name, a prompt, and a schedule (cron expression or one-time timestamp).
 
 A built-in **Compact Memory** task runs periodically to merge and summarise `MEMORY.md`, keeping it concise as the context grows.
 
@@ -140,7 +145,7 @@ A built-in **Compact Memory** task runs periodically to merge and summarise `MEM
 3. One-time tasks are deleted after they fire. Recurring tasks advance to the next scheduled time.
 4. If Aptove Router was offline when a task was due, it executes once on the next startup tick and then resumes the normal schedule.
 
-### Task file format (`.aptove/tasks/<id>.json`)
+### Task file format (`~/.aptove/projects/<your-project-path>/tasks/<id>.json`)
 
 ```json
 {
@@ -285,10 +290,11 @@ Run `aptove` and pick an agent from the setup wizard, or change it at any time v
 - **`common.toml`**: contains all secrets. Permissions are set to `0600` automatically. Keep it secure.
 - **Agent command**: saved to `agent_command` in `common.toml` by the setup wizard. It can be changed at any time via the `/agent` TUI command. Aptove Router is an operator tool: whoever can invoke it already has local shell access, so the agent command is implicitly trusted to the same degree as any other command that user could run.
 
-To rotate credentials (invalidates all paired devices):
+To rotate credentials (invalidates all paired devices), delete `common.toml` from the config directory for the project, then relaunch:
 
 ```bash
-rm .aptove/common.toml
+# macOS / Linux — replace the path with your actual project path
+rm ~/.aptove/projects/$(pwd | sed 's|^/||')/common.toml
 aptove
 ```
 
