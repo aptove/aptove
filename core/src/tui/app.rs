@@ -161,7 +161,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: CommonConfig, event_tx: mpsc::Sender<AppEvent>, log_level_arc: Arc<AtomicU8>) -> Self {
+    pub fn new(mut config: CommonConfig, event_tx: mpsc::Sender<AppEvent>, log_level_arc: Arc<AtomicU8>) -> Self {
+        // Grandfather existing installs: if the agent is already configured and the
+        // user has never seen the keep-alive prompt, mark it as prompted so they are
+        // not interrupted mid-session. New installs go through the wizard step below.
+        if config.agent_command.is_some() && !config.keep_alive_prompted {
+            config.keep_alive_prompted = true;
+            let _ = config.save();
+        }
+
         let wizard = WizardState::compute(&config);
         let screen = if wizard.is_some() { Screen::Wizard } else { Screen::Running };
 
@@ -180,7 +188,6 @@ impl App {
 
         let keepalive = if config.keep_alive {
             keepawake::Builder::default()
-                .display(true)
                 .idle(true)
                 .sleep(true)
                 .create()
@@ -528,6 +535,13 @@ impl App {
                 // Skip push setup.
                 self.advance_past_push();
             }
+            WizardStep::KeepAlivePrompt { .. } => {
+                // Skip = keep default (off), mark as prompted so we don't re-ask.
+                self.config.keep_alive = false;
+                self.config.keep_alive_prompted = true;
+                let _ = self.config.save();
+                self.finish_wizard();
+            }
             WizardStep::TransportPick { .. } if !cancelable => {
                 // Back to agent configuration, pre-filling the current command.
                 let current = self.config.agent_command.clone().unwrap_or_default();
@@ -639,6 +653,28 @@ impl App {
                     let _ = self.config.save();
                     self.advance_past_push();
                 }
+            }
+
+            Some(WizardStep::KeepAlivePrompt { selected }) => {
+                self.config.keep_alive = selected == 1;
+                self.config.keep_alive_prompted = true;
+                if self.config.keep_alive {
+                    self.keepalive = keepawake::Builder::default()
+                        .idle(true)
+                        .sleep(true)
+                        .create()
+                        .ok();
+                    if self.keepalive.is_some() {
+                        self.log_push("Keep-alive enabled — idle sleep prevented. Screen can still lock normally.".to_string());
+                    } else {
+                        self.log_push_warn(
+                            "Keep-alive guard creation failed — system may still sleep. \
+                             On Linux, systemd-inhibit or a D-Bus session is required.".to_string(),
+                        );
+                    }
+                }
+                let _ = self.config.save();
+                self.finish_wizard();
             }
 
             _ => {}
@@ -1507,7 +1543,7 @@ impl App {
                 .create()
                 .ok();
             if self.keepalive.is_some() {
-                self.log_push("Keep-alive enabled — system sleep prevented.".to_string());
+                self.log_push("Keep-alive enabled — idle sleep prevented. Screen can still lock normally.".to_string());
             } else {
                 self.log_push_warn(
                     "Keep-alive enabled but guard creation failed — system may still sleep. \

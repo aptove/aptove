@@ -134,9 +134,16 @@ pub struct CommonConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertise_addr: Option<String>,
 
-    /// Prevent system sleep while the bridge is running (default: true).
+    /// Prevent idle and system sleep while the bridge is running (default: false).
+    /// Display sleep is not blocked — the screen can still lock after the normal
+    /// idle timeout. Enable via the first-run wizard or `/keep-alive` in the TUI.
     #[serde(default = "keep_alive_default")]
     pub keep_alive: bool,
+
+    /// Set to true once the user has been shown the keep-alive prompt during
+    /// first-run setup. Used to avoid re-prompting on subsequent startups.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_alive_prompted: bool,
 
     /// Minimum log level shown in the TUI (ERROR / WARN / INFO / DEBUG / TRACE).
     #[serde(default = "log_level_default")]
@@ -182,7 +189,7 @@ pub struct CommonConfig {
     pub log_message_content: bool,
 }
 
-fn keep_alive_default() -> bool { true }
+fn keep_alive_default() -> bool { false }
 fn log_level_default() -> String { "WARN".to_string() }
 fn log_file_max_mb_default() -> u64 { 10 }
 fn log_file_count_default() -> usize { 5 }
@@ -230,7 +237,8 @@ impl Default for CommonConfig {
             agent_command: None,
             bind_address: None,
             advertise_addr: None,
-            keep_alive: true,
+            keep_alive: false,
+            keep_alive_prompted: false,
             log_level: "WARN".to_string(),
             log_file_max_mb: 10,
             log_file_count: 5,
@@ -477,7 +485,8 @@ mod tests {
         assert_eq!(cfg.log_level, "WARN");
         assert_eq!(cfg.log_file_max_mb, 10);
         assert_eq!(cfg.log_file_count, 5);
-        assert!(cfg.keep_alive);
+        assert!(!cfg.keep_alive);
+        assert!(!cfg.keep_alive_prompted);
         assert!(cfg.agent_id.is_empty());
         assert!(cfg.auth_token.is_empty());
         assert!(!cfg.log_message_content, "log_message_content must default to false");

@@ -41,6 +41,11 @@ pub enum WizardStep {
         field_idx: usize,
         error: Option<String>,
     },
+    /// First-run keep-alive prompt: ask the user whether to prevent idle sleep.
+    KeepAlivePrompt {
+        /// 0 = No (default off), 1 = Yes (enable keep-alive).
+        selected: usize,
+    },
     /// All config complete.
     Done,
 }
@@ -95,6 +100,15 @@ impl WizardState {
                     });
                 }
             }
+        }
+
+        // First-run prompt: ask whether to enable keep-alive (prevent idle sleep).
+        if !config.keep_alive_prompted {
+            return Some(Self {
+                step: WizardStep::KeepAlivePrompt { selected: 0 },
+                reconnect_mode: false,
+                cancelable: false,
+            });
         }
 
         None
@@ -187,6 +201,9 @@ pub fn wizard_move_up(state: &mut WizardState) {
         WizardStep::PushSetup { field_idx, .. } => {
             *field_idx = field_idx.saturating_sub(1);
         }
+        WizardStep::KeepAlivePrompt { selected } => {
+            *selected = selected.saturating_sub(1);
+        }
         _ => {}
     }
 }
@@ -199,6 +216,9 @@ pub fn wizard_move_down(state: &mut WizardState) {
         }
         WizardStep::PushSetup { field_idx, .. } => {
             *field_idx = (*field_idx + 1).min(3);
+        }
+        WizardStep::KeepAlivePrompt { selected } => {
+            *selected = (*selected + 1).min(1);
         }
         _ => {}
     }
@@ -348,6 +368,41 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
                 None,
             );
             render_form_dynamic(frame, inner, &labels, &values, *field_idx, error.as_deref());
+        }
+
+        WizardStep::KeepAlivePrompt { selected } => {
+            let inner = wizard_panel(
+                frame,
+                "Keep-Alive",
+                "\u{2191}/\u{2193} navigate   Enter confirm   Esc skip",
+                setup_note,
+            );
+            frame.render_widget(
+                Paragraph::new("Should Aptove prevent the computer from sleeping while running?")
+                    .style(Style::default().fg(Color::White)),
+                Rect { y: inner.y + 1, height: 1, ..inner },
+            );
+            frame.render_widget(
+                Paragraph::new("(The screen can still lock after the normal idle timeout.)")
+                    .style(Style::default().fg(Color::DarkGray)),
+                Rect { y: inner.y + 2, height: 1, ..inner },
+            );
+            let options = [
+                "No   — let the system sleep normally (recommended for laptops)",
+                "Yes  — prevent idle sleep; screen can still lock",
+            ];
+            let items: Vec<ListItem> = options.iter().enumerate().map(|(i, label)| {
+                let prefix = if i == *selected { "> " } else { "  " };
+                ListItem::new(format!("{}{}", prefix, label)).style(if i == *selected {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                })
+            }).collect();
+            frame.render_widget(
+                List::new(items),
+                Rect { y: inner.y + 4, height: 4, ..inner },
+            );
         }
 
         WizardStep::Done => {
