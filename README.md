@@ -303,13 +303,14 @@ cargo test               # Run tests
 
 ## Contributors
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) to learn how to contribute to the project.
+
 [![Contributors](https://contrib.rocks/image?repo=aptove/aptove)](https://github.com/aptove/aptove/graphs/contributors)
 
 ---
 
 ## Security Hall of Fame
 
-Thank you to everyone who has responsibly disclosed security vulnerabilities in Aptove.
 See [SECURITY.md](SECURITY.md) to learn how to report a vulnerability.
 
 *No entries yet — be the first.*
