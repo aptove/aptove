@@ -1914,9 +1914,44 @@ where
                                 suppressed_text_buf.clear();
                                 if let Some(ref path) = memory_path_for_task2 {
                                     let content = format!("{}\n", merged.trim());
-                                    match tokio::fs::write(path, content.as_bytes()).await {
-                                        Ok(_) => info!("🧠 MEMORY.md rewritten with merged content ({} bytes)", content.len()),
-                                        Err(e) => error!("Failed to rewrite MEMORY.md: {}", e),
+                                    // Read the current file so we can back it up and validate the new content.
+                                    let prev_bytes = tokio::fs::read(path).await.unwrap_or_default();
+                                    let prev_len = prev_bytes.len();
+                                    if !should_write_consolidated_memory(content.len(), prev_len) {
+                                        if content.trim().is_empty() {
+                                            error!(
+                                                "🧠 Memory consolidation produced empty content \
+                                                 — refusing to overwrite MEMORY.md ({} bytes protected)",
+                                                prev_len
+                                            );
+                                        } else {
+                                            error!(
+                                                "🧠 Memory consolidation result ({} bytes) is less than 20% \
+                                                 of original ({} bytes) — refusing to overwrite MEMORY.md",
+                                                content.len(),
+                                                prev_len
+                                            );
+                                        }
+                                    } else {
+                                        // Back up the original before overwriting.
+                                        if !prev_bytes.is_empty() {
+                                            let bak_path = std::path::PathBuf::from(
+                                                format!("{}.bak", path.display()),
+                                            );
+                                            if let Err(e) =
+                                                tokio::fs::write(&bak_path, &prev_bytes).await
+                                            {
+                                                warn!("🧠 Failed to write MEMORY.md.bak: {}", e);
+                                            }
+                                        }
+                                        match tokio::fs::write(path, content.as_bytes()).await {
+                                            Ok(_) => info!(
+                                                "🧠 MEMORY.md rewritten with merged content \
+                                                 ({} bytes, backup at MEMORY.md.bak)",
+                                                content.len()
+                                            ),
+                                            Err(e) => error!("Failed to rewrite MEMORY.md: {}", e),
+                                        }
                                     }
                                 }
                             } else if is_final {
@@ -2101,6 +2136,19 @@ fn collect_content_text_into(v: &serde_json::Value, buf: &mut String) {
         }
         _ => {} // Ignore bare strings — only collect from structured content blocks
     }
+}
+
+/// Returns true if the consolidated memory content should be written to disk.
+/// Rejects empty content and results that are less than 20% of the previous file size,
+/// which indicates a truncated or failed agent response.
+fn should_write_consolidated_memory(new_len: usize, prev_len: usize) -> bool {
+    if new_len == 0 {
+        return false;
+    }
+    if prev_len > 0 && new_len * 5 < prev_len {
+        return false;
+    }
+    true
 }
 
 /// Extract the content inside `<merged_memory>...</merged_memory>` tags from plain text.
@@ -2996,5 +3044,44 @@ mod file_browse_tests {
         let resp = files_content_response(dir.path(), "../../etc/passwd").await;
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["params"]["error"], "forbidden");
+    }
+}
+
+#[cfg(test)]
+mod memory_consolidation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_content() {
+        assert!(!should_write_consolidated_memory(0, 1000));
+    }
+
+    #[test]
+    fn rejects_severely_truncated_content() {
+        // 100 bytes vs 1000 bytes original = 10% — rejected
+        assert!(!should_write_consolidated_memory(100, 1000));
+    }
+
+    #[test]
+    fn accepts_at_exactly_20_percent() {
+        // 200 bytes vs 1000 bytes original = 20% — accepted (boundary)
+        assert!(should_write_consolidated_memory(200, 1000));
+    }
+
+    #[test]
+    fn accepts_legitimate_reduction() {
+        // 250 bytes vs 1000 bytes original = 25% — accepted (genuine deduplication)
+        assert!(should_write_consolidated_memory(250, 1000));
+    }
+
+    #[test]
+    fn accepts_when_no_previous_file() {
+        // prev_len == 0 means fresh file; any non-empty result is fine
+        assert!(should_write_consolidated_memory(500, 0));
+    }
+
+    #[test]
+    fn accepts_equal_or_larger() {
+        assert!(should_write_consolidated_memory(1500, 1000));
     }
 }
