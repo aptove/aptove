@@ -286,15 +286,19 @@ pub async fn run_bridge(
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut was_visible = false;
+            // Track whether PairingCompleted has been fired for the current code so
+            // we don't spam the event every tick after a successful scan.
+            let mut paired_notified = false;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {}
                     _ = &mut cancel_rx => break,
                 }
-                // Always detect successful pairing so PairingCompleted fires promptly.
-                if pm_renew.is_used() {
+                // Fire PairingCompleted once when the current code is used, but keep
+                // the task alive so future /qr openings get a fresh code.
+                if !paired_notified && pm_renew.is_used() {
                     let _ = tx_renew.send(AppEvent::Bridge(BridgeEvent::PairingCompleted)).await;
-                    break;
+                    paired_notified = true;
                 }
                 let is_visible = qr_visible_task.load(Ordering::Relaxed);
                 let just_opened = is_visible && !was_visible;
@@ -304,6 +308,7 @@ pub async fn run_bridge(
                 // the code expires while the popup stays open.
                 if is_visible && (just_opened || pm_renew.is_expired()) {
                     pm_renew.renew();
+                    paired_notified = false; // new code — allow PairingCompleted again
                     let _ = tx_renew.send(AppEvent::Bridge(BridgeEvent::PairingUrlReady {
                         url: pm_renew.get_pairing_url(&base_url_renew),
                         transport: transport_renew.clone(),

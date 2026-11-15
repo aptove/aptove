@@ -1,8 +1,8 @@
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph},
     Frame,
 };
 
@@ -30,6 +30,7 @@ pub fn render_status_bar(
     transports: &[TransportState],
     push_status: &PushStatus,
     keep_alive: bool,
+    cwd: &str,
 ) {
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
     let mut spans: Vec<Span> = vec![Span::styled(
@@ -58,6 +59,17 @@ pub fn render_status_bar(
     spans.push(Span::styled("●", Style::default().bg(Color::DarkGray).fg(ka_color)));
     spans.push(Span::styled("]", base));
 
-    let para = Paragraph::new(Line::from(spans)).style(base);
-    frame.render_widget(para, area);
+    // Split area: left for existing indicators, right for the cwd label.
+    let cwd_text = format!("[path {}] ", cwd);
+    let cwd_width = cwd_text.chars().count() as u16;
+    let [left_area, right_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(cwd_width),
+    ]).areas(area);
+
+    let left_para = Paragraph::new(Line::from(spans)).style(base);
+    frame.render_widget(left_para, left_area);
+
+    let right_para = Paragraph::new(Line::from(vec![Span::styled(cwd_text, base)])).style(base);
+    frame.render_widget(right_para, right_area);
 }

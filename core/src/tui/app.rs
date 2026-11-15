@@ -154,6 +154,9 @@ pub struct App {
     // Auto-retry transport build failures every RETRY_INTERVAL_SECS.
     auto_retry: bool,
     retry_count: u32,
+
+    // Working directory (home-shortened) shown in the status bar.
+    cwd: String,
 }
 
 impl App {
@@ -196,6 +199,20 @@ impl App {
 
         let initial_push_status = if config.effective_push_relay().is_some() { PushStatus::Ok } else { PushStatus::Disabled };
 
+        let cwd = {
+            let path = std::env::current_dir().unwrap_or_default();
+            let s = path.to_string_lossy().into_owned();
+            if let Ok(home) = std::env::var("HOME") {
+                if s.starts_with(&home) {
+                    format!("~{}", &s[home.len()..])
+                } else {
+                    s
+                }
+            } else {
+                s
+            }
+        };
+
         Self {
             screen,
             wizard,
@@ -235,6 +252,7 @@ impl App {
             bridge_error: None,
             auto_retry: true,
             retry_count: 0,
+            cwd,
         }
     }
 
@@ -332,6 +350,7 @@ impl App {
                             transport_up: self.transport_up,
                             push_status: self.push_status.clone(),
                             keep_alive: self.keepalive.is_some(),
+                            cwd: self.cwd.clone(),
                             copy_hint: if self.copy_hint_ticks > 0 { Some(self.copy_hint_msg.as_str()) } else { None },
                         };
                         // Build autocomplete entries for the renderer (no allocation if empty).
