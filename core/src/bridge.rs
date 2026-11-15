@@ -990,23 +990,7 @@ where
                 .map(|t| token_matches(t, expected_token))
                 .unwrap_or(false);
 
-            // Also check query string as fallback
-            let query_token = if !token_valid {
-                req.uri().query()
-                    .and_then(|q| {
-                        q.split('&')
-                            .find(|p| p.starts_with("token="))
-                            .map(|p| p[6..].to_string())
-                    })
-            } else {
-                None
-            };
-
-            let query_token_valid = query_token.as_deref()
-                .map(|t| token_matches(t, expected_token))
-                .unwrap_or(false);
-
-            if !token_valid && !query_token_valid {
+            if !token_valid {
                 let error_response = tokio_tungstenite::tungstenite::http::Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .body(Some("Unauthorized: invalid or missing auth token".into()))
@@ -1015,7 +999,7 @@ where
             }
 
             // Store the validated token for pool routing
-            if let Some(t) = header_token.filter(|t| token_matches(t, expected_token)).or(query_token.filter(|t| token_matches(t, expected_token))) {
+            if let Some(t) = header_token.filter(|t| token_matches(t, expected_token)) {
                 // We can't await here (sync closure), so use try_lock
                 if let Ok(mut guard) = extracted_token_clone.try_lock() {
                     *guard = t;
