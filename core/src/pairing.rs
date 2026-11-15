@@ -18,7 +18,7 @@ pub enum PairingError {
     InvalidCode,
     #[error("Pairing code has already been used")]
     CodeAlreadyUsed,
-    #[error("Too many failed attempts. Please restart the bridge to get a new code.")]
+    #[error("Too many failed attempts. Open /qr in Aptove Router to get a new code.")]
     RateLimited,
 }
 
@@ -65,7 +65,7 @@ impl PairingErrorResponse {
     pub fn rate_limited() -> Self {
         Self {
             error: "rate_limited".to_string(),
-            message: "Too many failed attempts. Please restart the bridge to get a new code.".to_string(),
+            message: "Too many failed attempts. Open /qr in Aptove Router to get a new code.".to_string(),
         }
     }
 }

@@ -134,9 +134,9 @@ fn check_tailscale_version() -> Result<()> {
         .context("Failed to run 'tailscale version'")?;
     let version_str = String::from_utf8_lossy(&output.stdout);
     if let Some((major, minor)) = parse_tailscale_version(&version_str) {
-        if major == 0 || (major == 1 && minor < 38) {
+        if major == 0 || (major == 1 && minor < 52) {
             anyhow::bail!(
-                "tailscale serve requires Tailscale v1.38+. Installed: {}.{}. \
+                "tailscale serve requires Tailscale v1.52+. Installed: {}.{}. \
                  Update at https://tailscale.com/download",
                 major, minor
             );
