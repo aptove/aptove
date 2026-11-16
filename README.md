@@ -235,7 +235,7 @@ All four fields are required. If the section is absent or any field is empty, pu
 
 ```
 ┌─────────────┐                    ┌───────────────────────┐        ┌──────────────┐
-│  Client App │◄──────────────────►│  Aptove Router binary    │◄──────►│  ACP Agent│
+│  Client App │◄──────────────────►│  Aptove Router binary │◄──────►│  ACP Agent   │
 │ (iOS/Android│  WebSocket (TLS)   │  (transport listener) │  stdio │  (your cmd)  │
 └─────────────┘                    └───────────────────────┘        └──────────────┘
 ```
