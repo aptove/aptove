@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Notify, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::push::PushRelayClient;
@@ -127,6 +127,10 @@ pub struct AgentPool {
     /// User-configured name for this agent instance. When set, overrides the name
     /// extracted from the ACP `initialize` response for push notification titles.
     configured_agent_name: Option<String>,
+    /// Notified whenever kill_all_agents() is called. Health-monitor (bridge/ping)
+    /// connections select on this so they close immediately when the agent command changes,
+    /// letting the mobile client retry without waiting for the 5-minute spawn-error backoff.
+    pub kill_notify: Arc<Notify>,
 }
 
 impl AgentPool {
@@ -138,6 +142,7 @@ impl AgentPool {
             push_result_tx: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             configured_agent_name: None,
+            kill_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -432,6 +437,14 @@ impl AgentPool {
         Ok((ws_to_agent_tx, agent_to_ws_rx, Vec::new(), false, None, None, broadcast_tx))
     }
 
+    /// Return a broadcast sender for a live agent, or None if the agent is gone.
+    /// Used by connection handlers to send multi-device echo messages without
+    /// holding a long-lived sender clone (which would prevent kill_all_agents()
+    /// from closing the channel and triggering connected-client disconnects).
+    pub fn get_broadcast_tx(&self, token: &str) -> Option<broadcast::Sender<String>> {
+        self.agents.get(token).map(|a| a.agent_to_ws_tx.clone())
+    }
+
     /// Mark a client as disconnected. The agent stays alive for idle_timeout.
     pub fn mark_disconnected(&mut self, token: &str) {
         if let Some(agent) = self.agents.get_mut(token) {
@@ -530,6 +543,9 @@ impl AgentPool {
             }
         }
         info!("All pooled agents killed (agent command update)");
+        // Wake all bridge/ping health-monitor connections so they close immediately.
+        // This lets mobile clients retry without waiting for the spawn-error backoff.
+        self.kill_notify.notify_waiters();
     }
 
     /// Check for idle agents that have exceeded the timeout and kill them

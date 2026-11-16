@@ -1118,10 +1118,93 @@ where
     // disconnects immediately if it doesn't match the expected bridge.
     bridge_handshake(&mut ws_sender, &bridge_agent_id, &working_dir, &agent_name).await?;
 
+    // Pre-read the first client message to check for bridge/ping health checks before
+    // spawning an agent. Normal connections send `initialize` here; health-check
+    // connections send `bridge/ping` and must not consume a pool slot.
+    let first_msg = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        ws_receiver.next(),
+    ).await {
+        Ok(Some(Ok(msg))) => msg,
+        _ => return Ok(()),
+    };
+
+    // Determine the method without consuming first_msg yet.
+    let first_msg_method: Option<String> = if let Ok(text) = first_msg.to_text() {
+        serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| v["method"].as_str().map(str::to_owned))
+    } else {
+        None
+    };
+
+    if first_msg_method.as_deref() == Some("bridge/ping") {
+        // Lightweight health-check connection — respond and hold open.
+        // iOS opens one of these when the agent is in the orange "AI offline" state so
+        // it can detect within ~1 second when Aptove Router stops entirely.
+        // We also select on kill_notify: when the user updates the agent command,
+        // kill_all_agents() fires the notify and we close this connection so iOS
+        // retries immediately instead of waiting out the 5-minute spawn-error backoff.
+        info!("🏓 bridge/ping health check — holding connection open (no agent spawned)");
+        let pong = serde_json::json!({"jsonrpc":"2.0","method":"bridge/pong","params":{}});
+        let _ = ws_sender.send(Message::Text(pong.to_string().into())).await;
+        let kill_notify = pool.read().await.kill_notify.clone();
+        loop {
+            tokio::select! {
+                msg = ws_receiver.next() => {
+                    match msg {
+                        Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                        Some(Ok(Message::Ping(data))) => { let _ = ws_sender.send(Message::Pong(data)).await; }
+                        _ => {}
+                    }
+                }
+                _ = kill_notify.notified() => {
+                    // Agent command changed — close so the mobile client retries immediately.
+                    info!("🏓 bridge/ping: agent command changed — closing health monitor connection");
+                    let _ = ws_sender.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Not a health check — store the pre-read message so it can be re-injected
+    // into the agent message pipeline after pool.get_or_spawn().
+    let mut pending_first_msg: Option<String> = if first_msg.is_text() || first_msg.is_binary() {
+        Some(String::from_utf8_lossy(&first_msg.into_data()).to_string())
+    } else {
+        None
+    };
+
     // Get or spawn agent from pool
-    let (ws_to_agent_tx, mut agent_to_ws_rx, buffered, was_reused, cached_init, cached_session, broadcast_tx) = {
+    // broadcast_tx is intentionally destructured as `_` and dropped immediately.
+    // Holding a long-lived broadcast::Sender clone prevents kill_all_agents() from
+    // closing the channel — Task 2 would never see RecvError::Closed and would
+    // never send the WebSocket close frame that tells iOS to reconnect.
+    // Multi-device echo in Task 1 fetches the sender on-demand from the pool instead.
+    let (ws_to_agent_tx, mut agent_to_ws_rx, buffered, was_reused, cached_init, cached_session, _) = {
         let mut pool = pool.write().await;
-        pool.get_or_spawn(&token, &agent_command).await?
+        match pool.get_or_spawn(&token, &agent_command).await {
+            Ok(result) => result,
+            Err(e) => {
+                // Notify the client that the AI agent process failed to start before closing.
+                // The transport (WebSocket) is reachable but the AI command is misconfigured.
+                // iOS uses this to create the agent entity with an "AI offline" indicator.
+                let error_msg = format!("{:#}", e);
+                let notif = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "bridge/agentError",
+                    "params": {
+                        "bridgeAgentId": bridge_agent_id,
+                        "error": error_msg,
+                        "code": "spawn_failed"
+                    }
+                });
+                let _ = ws_sender.send(Message::Text(notif.to_string().into())).await;
+                return Err(e);
+            }
+        }
     };
     
     if was_reused {
@@ -1140,9 +1223,10 @@ where
     if was_reused {
         if let Some(ref cached) = cached_init {
             info!("🔄 Intercepting initialize for session resumption");
-            // Wait for the client's first message (should be `initialize`)
+            // Use the pre-read first message (captured before pool.get_or_spawn)
+            // rather than reading a new one from the WebSocket.
             let init_handled = handle_initialize_intercept(
-                &mut ws_receiver, &mut ws_sender, cached
+                &mut ws_receiver, &mut ws_sender, cached, pending_first_msg.take()
             ).await;
             if init_handled {
                 info!("✅ Initialize intercepted, session state preserved");
@@ -1265,8 +1349,11 @@ where
     };
 
     // Task 1: WebSocket → Agent (via channel)
+    // pending_first_msg holds the pre-read first message (the `initialize` request)
+    // when it was not consumed by handle_initialize_intercept above.
+    let pending_for_task1 = pending_first_msg;
     let ws_to_agent_tx_clone = ws_to_agent_tx.clone();
-    let broadcast_tx_for_task1 = broadcast_tx.clone();
+    let token_for_echo = token.clone(); // used to look up broadcast tx on-demand
     let device_client_id_for_task1 = device_client_id.clone();
     let push_relay_for_register = push_relay.clone();
     let registered_tokens_for_register = Arc::clone(&registered_push_tokens);
@@ -1284,6 +1371,17 @@ where
         // Pre-set to true for reused agents resuming an existing session (session/load) since
         // memory is already in context. False for fresh agents or session/new resets.
         let mut memory_injected = initial_memory_injected;
+
+        // Forward the pre-read first message (initialize) to the agent when it was not
+        // intercepted by handle_initialize_intercept (i.e. fresh agent or no cached init).
+        if let Some(pending_text) = pending_for_task1 {
+            debug!("📥 Injecting pre-read first message ({} bytes) into agent pipeline", pending_text.len());
+            if ws_to_agent_tx_clone.send(pending_text).await.is_err() {
+                error!("Failed to forward pre-read first message to agent channel");
+                return;
+            }
+        }
+
         while let Some(msg_result) = ws_receiver.next().await {
             match msg_result {
                 Ok(msg) => {
@@ -1754,7 +1852,15 @@ where
                                         }
                                     });
                                     if let Ok(echo_str) = serde_json::to_string(&echo) {
-                                        let _ = broadcast_tx_for_task1.send(echo_str);
+                                        // Look up the broadcast sender on-demand instead of
+                                        // holding a long-lived clone. A long-lived clone keeps
+                                        // the channel open after kill_all_agents() drops all
+                                        // pool entries, preventing Task 2 from seeing
+                                        // RecvError::Closed and closing the WebSocket.
+                                        let broadcast_opt = pool_for_set_name.read().await.get_broadcast_tx(&token_for_echo);
+                                        if let Some(tx) = broadcast_opt {
+                                            let _ = tx.send(echo_str);
+                                        }
                                     }
                                 }
                             }
@@ -2351,19 +2457,23 @@ async fn handle_initialize_intercept<S>(
     ws_receiver: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<S>>,
     ws_sender: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<S>, Message>,
     cached_response: &str,
+    pending_msg: Option<String>,
 ) -> bool
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // Read the first message from the client
-    let first_msg = match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        ws_receiver.next(),
-    ).await {
-        Ok(Some(Ok(msg))) if msg.is_text() || msg.is_binary() => {
-            String::from_utf8_lossy(&msg.into_data()).to_string()
-        }
-        _ => return false,
+    // Use the pre-read message if provided; otherwise read the next message from the stream.
+    let first_msg = match pending_msg {
+        Some(text) => text,
+        None => match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            ws_receiver.next(),
+        ).await {
+            Ok(Some(Ok(msg))) if msg.is_text() || msg.is_binary() => {
+                String::from_utf8_lossy(&msg.into_data()).to_string()
+            }
+            _ => return false,
+        },
     };
     
     // Parse it as JSON-RPC to check if it's an `initialize` request

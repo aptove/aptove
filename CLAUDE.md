@@ -110,6 +110,9 @@ Each item below has a dedicated page in `docs/aptove/advanced/`:
 | bridge → client | `bridge/taskExecuted` | Notify that a scheduled task fired; params: `{ taskId, taskName, sessionId }` |
 | bridge → client | `bridge/files/listResponse` | Directory listing result; params: `{ path, entries[] }` or `{ path, error }` |
 | bridge → client | `bridge/files/contentResponse` | File content result; params: `{ path, mimeType, encoding, data }` or `{ path, error }` |
+| bridge → client | `bridge/agentError` | Notify that the AI agent process failed to start; params: `{ bridgeAgentId, error, code }` — sent before closing the connection so the client can create the agent entity with an AI-offline indicator |
+| client → bridge | `bridge/ping` | Lightweight health check; bridge responds with `bridge/pong` and holds the connection open without spawning an agent (no pool slot consumed) |
+| bridge → client | `bridge/pong` | Response to `bridge/ping` |
 
 ---
 
