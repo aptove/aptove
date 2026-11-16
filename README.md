@@ -183,14 +183,14 @@ Mobile app (backgrounded)          Aptove Router                  Push relay
         │  [app backgrounds]          │                              │
         │                             │                              │
         │                             │  agent produces output       │
-        │                             │◄─────────────────────       │
+        │                             │◄─────────────────────        │
         │                             │                              │
         │                             │  no WebSocket receiver       │
         │                             │  (broadcast send fails)      │
         │                             │                              │
         │                             │  POST /push (JWT Bearer) ───►│
         │                             │                              │
-        │◄────────────────────────── APNs/FCM notification          │
+        │◄────────────────────────── APNs/FCM notification           │
         │                             │                              │
         │  [app foregrounds]          │                              │
         │  reconnects WebSocket ─────►│                              │
@@ -235,7 +235,7 @@ All four fields are required. If the section is absent or any field is empty, pu
 
 ```
 ┌─────────────┐                    ┌───────────────────────┐        ┌──────────────┐
-│  Client App │◄──────────────────►│  Aptove Router binary    │◄──────►│  ACP Agent   │
+│  Client App │◄──────────────────►│  Aptove Router binary    │◄──────►│  ACP Agent│
 │ (iOS/Android│  WebSocket (TLS)   │  (transport listener) │  stdio │  (your cmd)  │
 └─────────────┘                    └───────────────────────┘        └──────────────┘
 ```
