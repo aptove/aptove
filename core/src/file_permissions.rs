@@ -57,7 +57,7 @@ mod windows_acl {
     use std::path::Path;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL};
     use windows::Win32::Security::{
-        GetTokenInformation, OpenProcessToken, TokenUser, TOKEN_QUERY, TOKEN_USER,
+        ACE_FLAGS, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
         DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
         PROTECTED_DACL_SECURITY_INFORMATION, ACL,
     };
@@ -65,16 +65,16 @@ mod windows_acl {
         SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
         NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
     };
-    use windows::Win32::System::Threading::GetCurrentProcess;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::core::{PCWSTR, PWSTR};
 
     // These constants are defined in the Windows SDK but not always re-exported
     // as typed constants in every version of the windows crate, so we keep them
     // as raw u32 values to avoid version-specific import issues.
     const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
-    const OBJECT_INHERIT_ACE: u32 = 0x01;
-    const CONTAINER_INHERIT_ACE: u32 = 0x02;
-    const NO_INHERITANCE: u32 = 0x00;
+    const OBJECT_INHERIT_ACE: ACE_FLAGS = ACE_FLAGS(0x01);
+    const CONTAINER_INHERIT_ACE: ACE_FLAGS = ACE_FLAGS(0x02);
+    const NO_INHERITANCE: ACE_FLAGS = ACE_FLAGS(0x00);
 
     /// Apply an owner-only DACL to `path`.
     ///
@@ -110,7 +110,7 @@ mod windows_acl {
             let owner_sid = token_user.User.Sid; // PSID (*mut c_void)
 
             // ── 3. Build a one-entry EXPLICIT_ACCESS for the owner ─────────
-            let inheritance: u32 = if inheritable {
+            let inheritance: ACE_FLAGS = if inheritable {
                 CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
             } else {
                 NO_INHERITANCE
@@ -133,7 +133,7 @@ mod windows_acl {
 
             // ── 4. Create a new DACL from that single entry ────────────────
             let mut new_dacl: *mut ACL = std::ptr::null_mut();
-            SetEntriesInAclW(Some(&[ea]), None, &mut new_dacl).map_err(win_err)?;
+            SetEntriesInAclW(Some(&[ea]), None, &mut new_dacl).ok().map_err(win_err)?;
 
             // ── 5. Apply the DACL; PROTECTED_DACL strips inherited ACEs ────
             let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -153,7 +153,7 @@ mod windows_acl {
             // LocalFree(NULL) is a no-op, so this is safe even if the pointer is null.
             windows::Win32::Foundation::LocalFree(HLOCAL(new_dacl as *mut _));
 
-            result.map_err(win_err)?;
+            result.ok().map_err(win_err)?;
         }
 
         Ok(())
