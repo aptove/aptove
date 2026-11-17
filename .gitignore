@@ -27,3 +27,6 @@ target/
 
 # Wrangler CLI cache (local developer state, not repo content)
 .wrangler/
+
+# Aptove runtime directory (certs, config, logs, tasks — local only)
+.aptove/
