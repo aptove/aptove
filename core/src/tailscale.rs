@@ -45,7 +45,24 @@ fn tailscale_state() -> TailscaleState {
         return TailscaleState::NotInstalled;
     }
 
-    TailscaleState::Available
+    // `--version` only tells us the binary exists. Use `tailscale status` to
+    // confirm the daemon is actually reachable and the network is connected.
+    // Exits non-zero when the daemon is stopped, the network is disabled, or
+    // the user is not logged in.
+    let Ok(status) = Command::new("tailscale")
+        .arg("status")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return TailscaleState::NotRunning;
+    };
+
+    if status.status.success() {
+        TailscaleState::Available
+    } else {
+        TailscaleState::NotRunning
+    }
 }
 
 /// Returns `true` if the `tailscale` binary is on PATH and the daemon is reachable.

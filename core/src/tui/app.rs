@@ -523,6 +523,7 @@ impl App {
     async fn handle_wizard_escape(&mut self) {
         let Some(ref wizard) = self.wizard else { return };
         let cancelable = wizard.cancelable;
+        let came_through_push_menu = wizard.came_through_push_menu;
         match &wizard.step {
             WizardStep::PluginSetup { .. } => {
                 // Back to transport picker.
@@ -537,12 +538,53 @@ impl App {
                 // Skip push setup.
                 self.advance_past_push();
             }
+            WizardStep::PushWizardMenu { .. } if !cancelable => {
+                // First-run wizard: Esc goes back to transport picker.
+                let ts_available = crate::tailscale::is_tailscale_available();
+                let ts_installed = crate::tailscale::is_tailscale_installed();
+                let statuses = compute_transport_statuses(&self.config, self.selected_transport.as_deref(), ts_available, ts_installed);
+                if let Some(ref mut w) = self.wizard {
+                    w.step = WizardStep::TransportPick { selected: 0, ts_available, ts_installed, statuses };
+                }
+            }
+            WizardStep::PushWizardMenu { .. } => {
+                // Cancelable (opened via /push): Esc cancels the wizard.
+                self.wizard = None;
+                self.screen = Screen::Running;
+                self.needs_clear = true;
+                self.agent_only_restart = false;
+            }
+            WizardStep::PushWizardAptoveForm { .. } | WizardStep::PushWizardSelfManagedForm { .. } => {
+                // Back to push option menu.
+                if let Some(ref mut w) = self.wizard {
+                    w.step = WizardStep::PushWizardMenu { selected: 0 };
+                }
+            }
+            WizardStep::QrWizardStep { .. } => {
+                // Finish wizard; bridge is already running.
+                self.finish_wizard_qr_done();
+            }
+            WizardStep::KeepAlivePrompt { .. } if came_through_push_menu => {
+                // Back to push menu, pre-selecting the current push choice.
+                let sel = match self.config.push_selection {
+                    Some(PushSelection::Aptove) => 1,
+                    Some(PushSelection::Custom) => 2,
+                    _ => 0,
+                };
+                // Reset so compute() re-shows PushWizardMenu on restart.
+                self.config.push_selection = None;
+                let _ = self.config.save();
+                if let Some(ref mut w) = self.wizard {
+                    w.step = WizardStep::PushWizardMenu { selected: sel };
+                    w.came_through_push_menu = false;
+                }
+            }
             WizardStep::KeepAlivePrompt { .. } => {
                 // Skip = keep default (off), mark as prompted so we don't re-ask.
                 self.config.keep_alive = false;
                 self.config.keep_alive_prompted = true;
                 let _ = self.config.save();
-                self.finish_wizard();
+                self.advance_to_qr_step();
             }
             WizardStep::TransportPick { .. } if !cancelable => {
                 // Back to agent configuration, pre-filling the current command.
@@ -657,6 +699,107 @@ impl App {
                 }
             }
 
+            Some(WizardStep::PushWizardMenu { selected }) => {
+                match selected {
+                    0 => {
+                        // No Push
+                        self.config.push_selection = Some(PushSelection::None);
+                        let _ = self.config.save();
+                        if let Some(ref mut w) = self.wizard { w.came_through_push_menu = true; }
+                        self.advance_to_keepalive();
+                    }
+                    1 => {
+                        // Aptove Push Service
+                        if let Some(ref mut w) = self.wizard {
+                            w.step = WizardStep::PushWizardAptoveForm {
+                                fields: Default::default(),
+                                field_idx: 0,
+                                error: None,
+                            };
+                        }
+                    }
+                    2 => {
+                        // Self Managed
+                        if let Some(ref mut w) = self.wizard {
+                            w.step = WizardStep::PushWizardSelfManagedForm {
+                                fields: Default::default(),
+                                field_idx: 0,
+                                error: None,
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Some(WizardStep::PushWizardAptoveForm { ref fields, field_idx, .. }) => {
+                if field_idx < 1 {
+                    if let Some(ref mut w) = self.wizard {
+                        if let WizardStep::PushWizardAptoveForm { ref mut field_idx, .. } = w.step {
+                            *field_idx = 1;
+                        }
+                    }
+                } else {
+                    let client_id     = fields[0].clone();
+                    let client_secret = fields[1].clone();
+                    if client_id.is_empty() || client_secret.is_empty() {
+                        if let Some(ref mut w) = self.wizard {
+                            if let WizardStep::PushWizardAptoveForm { ref mut error, .. } = w.step {
+                                *error = Some("Client ID and secret are required.".to_string());
+                            }
+                        }
+                        return;
+                    }
+                    self.config.aptove_push_relay = Some(PushRelayConfig {
+                        url: "https://push.aptove.com".to_string(),
+                        token_url: "https://token.aptove.com".to_string(),
+                        client_id,
+                        client_secret,
+                    });
+                    self.config.push_selection = Some(PushSelection::Aptove);
+                    let _ = self.config.save();
+                    if let Some(ref mut w) = self.wizard { w.came_through_push_menu = true; }
+                    self.advance_to_keepalive();
+                }
+            }
+
+            Some(WizardStep::PushWizardSelfManagedForm { ref fields, field_idx, .. }) => {
+                if field_idx < 3 {
+                    if let Some(ref mut w) = self.wizard {
+                        if let WizardStep::PushWizardSelfManagedForm { ref mut field_idx, .. } = w.step {
+                            *field_idx += 1;
+                        }
+                    }
+                } else {
+                    let token_url     = fields[0].clone();
+                    let push_url      = fields[1].clone();
+                    let client_id     = fields[2].clone();
+                    let client_secret = fields[3].clone();
+                    if client_id.is_empty() || client_secret.is_empty() {
+                        if let Some(ref mut w) = self.wizard {
+                            if let WizardStep::PushWizardSelfManagedForm { ref mut error, .. } = w.step {
+                                *error = Some("Client ID and secret are required.".to_string());
+                            }
+                        }
+                        return;
+                    }
+                    self.config.custom_push_relay = Some(PushRelayConfig {
+                        url: push_url,
+                        token_url,
+                        client_id,
+                        client_secret,
+                    });
+                    self.config.push_selection = Some(PushSelection::Custom);
+                    let _ = self.config.save();
+                    if let Some(ref mut w) = self.wizard { w.came_through_push_menu = true; }
+                    self.advance_to_keepalive();
+                }
+            }
+
+            Some(WizardStep::QrWizardStep { .. }) => {
+                self.finish_wizard_qr_done();
+            }
+
             Some(WizardStep::KeepAlivePrompt { selected }) => {
                 self.config.keep_alive = selected == 1;
                 self.config.keep_alive_prompted = true;
@@ -676,7 +819,7 @@ impl App {
                     }
                 }
                 let _ = self.config.save();
-                self.finish_wizard();
+                self.advance_to_qr_step();
             }
 
             _ => {}
@@ -801,11 +944,47 @@ impl App {
     }
 
     async fn advance_wizard_after_transport(&mut self) {
-        self.finish_wizard();
+        if self.config.push_selection.is_none() {
+            if let Some(ref mut w) = self.wizard {
+                w.step = WizardStep::PushWizardMenu { selected: 0 };
+            }
+        } else {
+            self.advance_to_keepalive();
+        }
     }
 
     fn advance_past_push(&mut self) {
-        self.finish_wizard();
+        self.advance_to_keepalive();
+    }
+
+    fn advance_to_keepalive(&mut self) {
+        if !self.config.keep_alive_prompted {
+            if let Some(ref mut w) = self.wizard {
+                w.step = WizardStep::KeepAlivePrompt { selected: 0 };
+            }
+        } else {
+            self.advance_to_qr_step();
+        }
+    }
+
+    fn advance_to_qr_step(&mut self) {
+        if let Some(ref mut w) = self.wizard {
+            w.step = WizardStep::QrWizardStep { qr_string: None, pairing_url: None };
+        }
+        self.show_qr_on_ready = false; // wizard shows QR inline; no popup needed
+        self.auto_retry = true;
+        self.retry_count = 0;
+        if self.bridge_shutdown.is_none() {
+            self.start_bridge();
+        }
+    }
+
+    fn finish_wizard_qr_done(&mut self) {
+        self.wizard = None;
+        self.screen = Screen::Running;
+        self.needs_clear = true;
+        self.agent_only_restart = false;
+        // Bridge is already running. No restart, no push popup (configured in wizard).
     }
 
     /// Close the active popup and schedule a full clear before the next draw
@@ -1244,6 +1423,7 @@ impl App {
                     step: WizardStep::ConfigureAgent { input: current },
                     reconnect_mode: false,
                     cancelable: true,
+                    came_through_push_menu: false,
                 });
                 self.screen = Screen::Wizard;
                 self.needs_clear = true;
@@ -1608,6 +1788,14 @@ impl App {
                     self.popup = None;
                     self.needs_clear = true;
                 }
+                // Also auto-close the wizard QR step when pairing completes.
+                let in_qr_step = matches!(
+                    self.wizard.as_ref().map(|w| &w.step),
+                    Some(WizardStep::QrWizardStep { .. })
+                );
+                if in_qr_step {
+                    self.finish_wizard_qr_done();
+                }
             }
             BridgeEvent::PairingUrlReady { url, transport } => {
                 debug!("Pairing URL ready for transport: {}", transport);
@@ -1616,6 +1804,13 @@ impl App {
                 // Pre-render QR string.
                 if let Ok(qr) = crate::qr::render_qr_code(&url) {
                     self.qr_string = Some(qr);
+                }
+                // If the wizard is showing QrWizardStep, populate it now.
+                if let Some(ref mut w) = self.wizard {
+                    if let WizardStep::QrWizardStep { ref mut qr_string, ref mut pairing_url } = w.step {
+                        *qr_string = self.qr_string.clone();
+                        *pairing_url = Some(url.clone());
+                    }
                 }
                 // Auto-open QR popup after wizard completion so the user can
                 // pair their mobile client immediately.

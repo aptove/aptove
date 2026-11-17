@@ -80,7 +80,7 @@ const PUSH_REGISTER_URL: &str = "https://dash.aptove.com";
 const PUSH_MENU_LABELS: &[&str] = &[
     "No Push  (buffer messages, no notifications)",
     "Aptove Push Service",
-    "Self Managed Push Service",
+    "Self Managed Push Server",
 ];
 
 fn render_push_popup(frame: &mut Frame, step: &PushPopupStep) {
@@ -175,7 +175,7 @@ fn render_self_managed_form(frame: &mut Frame, fields: &[String; 4], field_idx: 
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Self Managed Push Service ")
+        .title(" Self Managed Push Server ")
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black).fg(Color::White));
     let inner = block.inner(area);

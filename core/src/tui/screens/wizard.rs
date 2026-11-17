@@ -6,7 +6,10 @@ use ratatui::{
     Frame,
 };
 
-const AGENT_DOCS_URL: &str = "https://docs.aptove.com/aptove/agent";
+const AGENT_DOCS_URL: &str = "https://docs.aptove.com/aptove/agent#available-agents";
+const TRANSPORT_DOCS_URL: &str = "https://docs.aptove.com/aptove/transports";
+const PUSH_SERVICE_DOCS_URL: &str = "https://docs.aptove.com/push-service/overview";
+const PUSH_SERVER_DOCS_URL: &str = "https://docs.aptove.com/push-server/overview";
 
 use crate::common_config::CommonConfig;
 use crate::tailscale::{is_tailscale_available, is_tailscale_installed};
@@ -41,6 +44,28 @@ pub enum WizardStep {
         field_idx: usize,
         error: Option<String>,
     },
+    /// Top-level push option menu shown in the first-run wizard (No Push / Aptove / Self Managed).
+    PushWizardMenu { selected: usize },
+    /// Aptove push credentials form in the first-run wizard: fields = [client_id, client_secret].
+    PushWizardAptoveForm {
+        fields: [String; 2],
+        field_idx: usize,
+        error: Option<String>,
+    },
+    /// Self-managed push credentials form in the first-run wizard:
+    /// fields = [token_url, push_url, client_id, client_secret].
+    PushWizardSelfManagedForm {
+        fields: [String; 4],
+        field_idx: usize,
+        error: Option<String>,
+    },
+    /// Final wizard step: displays the QR pairing code.
+    /// The bridge is started when this step is entered; qr_string/pairing_url
+    /// are populated when PairingUrlReady fires.
+    QrWizardStep {
+        qr_string: Option<String>,
+        pairing_url: Option<String>,
+    },
     /// First-run keep-alive prompt: ask the user whether to prevent idle sleep.
     KeepAlivePrompt {
         /// 0 = No (default off), 1 = Yes (enable keep-alive).
@@ -55,6 +80,9 @@ pub struct WizardState {
     pub step: WizardStep,
     pub reconnect_mode: bool,
     pub cancelable: bool,
+    /// True when the user reached KeepAlivePrompt via the first-run PushWizardMenu.
+    /// Enables Esc-back from KeepAlivePrompt → PushWizardMenu.
+    pub came_through_push_menu: bool,
 }
 
 impl WizardState {
@@ -64,6 +92,7 @@ impl WizardState {
                 step: WizardStep::ConfigureAgent { input: String::new() },
                 reconnect_mode: false,
                 cancelable: false,
+                came_through_push_menu: false,
             });
         }
 
@@ -79,6 +108,7 @@ impl WizardState {
                 step: WizardStep::TransportPick { selected: 0, ts_available, ts_installed, statuses },
                 reconnect_mode: false,
                 cancelable: false,
+                came_through_push_menu: false,
             });
         }
 
@@ -97,9 +127,20 @@ impl WizardState {
                         },
                         reconnect_mode: false,
                         cancelable: false,
+                        came_through_push_menu: false,
                     });
                 }
             }
+        }
+
+        // First-run push setup: show inline push menu if not yet configured.
+        if config.push_selection.is_none() {
+            return Some(Self {
+                step: WizardStep::PushWizardMenu { selected: 0 },
+                reconnect_mode: false,
+                cancelable: false,
+                came_through_push_menu: false,
+            });
         }
 
         // First-run prompt: ask whether to enable keep-alive (prevent idle sleep).
@@ -108,6 +149,7 @@ impl WizardState {
                 step: WizardStep::KeepAlivePrompt { selected: 0 },
                 reconnect_mode: false,
                 cancelable: false,
+                came_through_push_menu: false,
             });
         }
 
@@ -122,6 +164,7 @@ impl WizardState {
             step: WizardStep::TransportPick { selected: 0, ts_available, ts_installed, statuses },
             reconnect_mode: true,
             cancelable: true,
+            came_through_push_menu: false,
         }
     }
 }
@@ -167,6 +210,12 @@ pub fn wizard_type_char(state: &mut WizardState, c: char) {
         WizardStep::PushSetup { fields, field_idx, .. } => {
             fields[*field_idx].push(c);
         }
+        WizardStep::PushWizardAptoveForm { fields, field_idx, .. } => {
+            fields[*field_idx].push(c);
+        }
+        WizardStep::PushWizardSelfManagedForm { fields, field_idx, .. } => {
+            fields[*field_idx].push(c);
+        }
         _ => {}
     }
 }
@@ -180,6 +229,12 @@ pub fn wizard_backspace(state: &mut WizardState) {
         WizardStep::PushSetup { fields, field_idx, .. } => {
             fields[*field_idx].pop();
         }
+        WizardStep::PushWizardAptoveForm { fields, field_idx, .. } => {
+            fields[*field_idx].pop();
+        }
+        WizardStep::PushWizardSelfManagedForm { fields, field_idx, .. } => {
+            fields[*field_idx].pop();
+        }
         _ => {}
     }
 }
@@ -188,6 +243,12 @@ pub fn wizard_next_field(state: &mut WizardState) {
     match &mut state.step {
         WizardStep::PluginSetup { fields, field_idx, .. } => {
             *field_idx = (*field_idx + 1) % fields.len().max(1);
+        }
+        WizardStep::PushWizardAptoveForm { field_idx, .. } => {
+            *field_idx = (*field_idx + 1).min(1);
+        }
+        WizardStep::PushWizardSelfManagedForm { field_idx, .. } => {
+            *field_idx = (*field_idx + 1).min(3);
         }
         _ => {}
     }
@@ -199,6 +260,15 @@ pub fn wizard_move_up(state: &mut WizardState) {
             *selected = selected.saturating_sub(1);
         }
         WizardStep::PushSetup { field_idx, .. } => {
+            *field_idx = field_idx.saturating_sub(1);
+        }
+        WizardStep::PushWizardMenu { selected } => {
+            *selected = selected.saturating_sub(1);
+        }
+        WizardStep::PushWizardAptoveForm { field_idx, .. } => {
+            *field_idx = field_idx.saturating_sub(1);
+        }
+        WizardStep::PushWizardSelfManagedForm { field_idx, .. } => {
             *field_idx = field_idx.saturating_sub(1);
         }
         WizardStep::KeepAlivePrompt { selected } => {
@@ -217,6 +287,15 @@ pub fn wizard_move_down(state: &mut WizardState) {
         WizardStep::PushSetup { field_idx, .. } => {
             *field_idx = (*field_idx + 1).min(3);
         }
+        WizardStep::PushWizardMenu { selected } => {
+            *selected = (*selected + 1).min(2);
+        }
+        WizardStep::PushWizardAptoveForm { field_idx, .. } => {
+            *field_idx = (*field_idx + 1).min(1);
+        }
+        WizardStep::PushWizardSelfManagedForm { field_idx, .. } => {
+            *field_idx = (*field_idx + 1).min(3);
+        }
         WizardStep::KeepAlivePrompt { selected } => {
             *selected = (*selected + 1).min(1);
         }
@@ -226,21 +305,39 @@ pub fn wizard_move_down(state: &mut WizardState) {
 
 // ── URL hit-testing ───────────────────────────────────────────────────────────
 
-/// Return the docs URL if `(col, row)` lands on the clickable link shown in
-/// the `ConfigureAgent` panel.
+/// Return the docs URL if `(col, row)` lands on a clickable link in a wizard panel.
 pub fn wizard_url_at(step: &WizardStep, col: u16, row: u16, term: Rect) -> Option<&'static str> {
+    let popup = centered(70, 80, term);
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let in_width = col >= inner.x && col < inner.x + inner.width;
+
     if matches!(step, WizardStep::ConfigureAgent { .. }) {
-        let popup = centered(70, 80, term);
-        let inner = Rect {
-            x: popup.x + 1,
-            y: popup.y + 1,
-            width: popup.width.saturating_sub(2),
-            height: popup.height.saturating_sub(2),
-        };
         // Docs link is rendered at inner.y + 5 (must match render_wizard below).
-        let url_row = inner.y + 5;
-        if row == url_row && col >= inner.x && col < inner.x + inner.width {
+        if row == inner.y + 5 && in_width {
             return Some(AGENT_DOCS_URL);
+        }
+    }
+    if matches!(step, WizardStep::TransportPick { .. }) {
+        // Docs link is rendered at inner.y + 1 + plugins.len() + 1 (must match render_wizard below).
+        let link_row = inner.y + 1 + transport::all().len() as u16 + 1;
+        if row == link_row && in_width {
+            return Some(TRANSPORT_DOCS_URL);
+        }
+    }
+    if let WizardStep::PushWizardMenu { selected } = step {
+        // Aptove shows link at y+7; Self Managed shows link at y+7.
+        // No Push has no link. Must match render_wizard below.
+        if *selected == 1 || *selected == 2 {
+            let link_row = inner.y + 7;
+            if row == link_row && in_width {
+                let url = if *selected == 2 { PUSH_SERVER_DOCS_URL } else { PUSH_SERVICE_DOCS_URL };
+                return Some(url);
+            }
         }
     }
     None
@@ -250,7 +347,7 @@ pub fn wizard_url_at(step: &WizardStep, col: u16, row: u16, term: Rect) -> Optio
 
 pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
     let setup_note: Option<&str> = if !state.cancelable {
-        Some("Tip: use /agent or /transport to update settings at any time")
+        Some("Any of these settings can be changed later using (/) commands")
     } else {
         None
     };
@@ -305,7 +402,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
             let title = if state.reconnect_mode {
                 "Change Transport"
             } else {
-                "Choose Transport for This Session"
+                "Choose Transport"
             };
             let pick_hint = if state.cancelable {
                 "\u{2191}/\u{2193} navigate   Enter select   Esc cancel"
@@ -318,6 +415,7 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
                 setup_note
             };
             let inner = wizard_panel(frame, title, pick_hint, transport_note);
+
             let plugins = transport::all();
             let items: Vec<ListItem> = plugins.iter().enumerate().map(|(i, plugin)| {
                 let prefix = if i == *selected { "> " } else { "  " };
@@ -331,6 +429,19 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
             }).collect();
             let list_area = Rect { y: inner.y + 1, height: inner.height.saturating_sub(2), ..inner };
             frame.render_widget(List::new(items), list_area);
+
+            // Clickable docs link — row inner.y + 1 + plugins.len() + 1 (must match wizard_url_at)
+            let link_row = inner.y + 1 + plugins.len() as u16 + 1;
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Need help? ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        TRANSPORT_DOCS_URL,
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                    ),
+                ])),
+                Rect { y: link_row, height: 1, ..inner },
+            );
         }
 
         WizardStep::PluginSetup { transport_name, fields, field_idx, error } => {
@@ -371,12 +482,12 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
         }
 
         WizardStep::KeepAlivePrompt { selected } => {
-            let inner = wizard_panel(
-                frame,
-                "Keep-Alive",
-                "\u{2191}/\u{2193} navigate   Enter confirm   Esc skip",
-                setup_note,
-            );
+            let keepalive_hint = if state.came_through_push_menu {
+                "\u{2191}/\u{2193} navigate   Enter confirm   Esc back"
+            } else {
+                "\u{2191}/\u{2193} navigate   Enter confirm   Esc skip"
+            };
+            let inner = wizard_panel(frame, "Keep-Alive", keepalive_hint, setup_note);
             frame.render_widget(
                 Paragraph::new("Should Aptove prevent the computer from sleeping while running?")
                     .style(Style::default().fg(Color::White)),
@@ -388,8 +499,8 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
                 Rect { y: inner.y + 2, height: 1, ..inner },
             );
             let options = [
-                "No   — let the system sleep normally (recommended for laptops)",
-                "Yes  — prevent idle sleep; screen can still lock",
+                "No   — let the system sleep normally",
+                "Yes  — prevent idle sleep; screen can still lock (recommended)",
             ];
             let items: Vec<ListItem> = options.iter().enumerate().map(|(i, label)| {
                 let prefix = if i == *selected { "> " } else { "  " };
@@ -403,6 +514,145 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
                 List::new(items),
                 Rect { y: inner.y + 4, height: 4, ..inner },
             );
+        }
+
+        WizardStep::PushWizardMenu { selected } => {
+            let push_menu_hint = if state.cancelable {
+                "\u{2191}/\u{2193} navigate   Enter select   Esc cancel"
+            } else {
+                "\u{2191}/\u{2193} navigate   Enter select   Esc back"
+            };
+            let inner = wizard_panel(frame, "Configure Push Notification", push_menu_hint, setup_note);
+            frame.render_widget(
+                Paragraph::new("Choose how the mobile app receives notifications when disconnected:")
+                    .style(Style::default().fg(Color::White)),
+                Rect { y: inner.y + 1, height: 1, ..inner },
+            );
+            const PUSH_OPTIONS: &[&str] = &[
+                "No Push",
+                "Aptove Push Service  (recommended)",
+                "Self Managed Push Server",
+            ];
+            let items: Vec<ListItem> = PUSH_OPTIONS.iter().enumerate().map(|(i, label)| {
+                let prefix = if i == *selected { "> " } else { "  " };
+                ListItem::new(format!("{}{}", prefix, label)).style(if i == *selected {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                })
+            }).collect();
+            frame.render_widget(
+                List::new(items),
+                Rect { y: inner.y + 3, height: 3, ..inner },
+            );
+
+            // Context-sensitive content below the list (y+7 = note/link row).
+            // No Push and Aptove: note at y+7, link at y+8.
+            // Self Managed: link at y+7 (no note).
+            // Must match wizard_url_at above.
+            match selected {
+                0 => {
+                    // No Push: limitation note only.
+                    frame.render_widget(
+                        Paragraph::new(
+                            "Without push, messages buffer locally and deliver when the app reconnects."
+                        ).style(Style::default().fg(Color::DarkGray)),
+                        Rect { y: inner.y + 7, height: 1, ..inner },
+                    );
+                }
+                1 => {
+                    // Aptove Push Service: link to push-service overview.
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled("Learn more: ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                PUSH_SERVICE_DOCS_URL,
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                            ),
+                        ])),
+                        Rect { y: inner.y + 7, height: 1, ..inner },
+                    );
+                }
+                _ => {
+                    // Self Managed: link to push-server overview.
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled("Learn more: ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                PUSH_SERVER_DOCS_URL,
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                            ),
+                        ])),
+                        Rect { y: inner.y + 7, height: 1, ..inner },
+                    );
+                }
+            }
+        }
+
+        WizardStep::PushWizardAptoveForm { fields, field_idx, error } => {
+            let inner = wizard_panel(
+                frame,
+                "Aptove Push Service",
+                "Tab next field   Enter submit   Esc back",
+                setup_note,
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Register at ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "dash.aptove.com",
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                    ),
+                    Span::styled(" to get credentials:", Style::default().fg(Color::DarkGray)),
+                ])),
+                Rect { y: inner.y + 1, height: 1, ..inner },
+            );
+            let labels = ["Client ID:", "Client Secret:"];
+            let values: Vec<String> = fields.to_vec();
+            let form_area = Rect { y: inner.y + 3, height: inner.height.saturating_sub(3), ..inner };
+            render_form_dynamic(frame, form_area, &labels, &values, *field_idx, error.as_deref());
+        }
+
+        WizardStep::PushWizardSelfManagedForm { fields, field_idx, error } => {
+            let labels = ["Token service URL:", "Push service URL:", "Client ID:", "Client Secret:"];
+            let values: Vec<String> = fields.to_vec();
+            let inner = wizard_panel(
+                frame,
+                "Self Managed Push Server",
+                "Tab next field   Enter submit   Esc back",
+                setup_note,
+            );
+            render_form_dynamic(frame, inner, &labels, &values, *field_idx, error.as_deref());
+        }
+
+        WizardStep::QrWizardStep { qr_string, pairing_url } => {
+            let hint = if qr_string.is_some() { "Enter continue" } else { "" };
+            let inner = wizard_panel(frame, "Scan QR Code", hint, setup_note);
+
+            if let (Some(qr), Some(url)) = (qr_string, pairing_url) {
+                // Render QR code — it may be tall, so we let it clip naturally.
+                frame.render_widget(
+                    Paragraph::new(qr.as_str()).style(Style::default().fg(Color::White)),
+                    Rect { y: inner.y + 1, height: inner.height.saturating_sub(5), ..inner },
+                );
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("Scan with ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("Aptove", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                        Span::styled(" on your phone", Style::default().fg(Color::DarkGray)),
+                    ])),
+                    Rect { y: inner.y + inner.height.saturating_sub(4), height: 1, ..inner },
+                );
+                frame.render_widget(
+                    Paragraph::new(url.as_str()).style(Style::default().fg(Color::DarkGray)),
+                    Rect { y: inner.y + inner.height.saturating_sub(3), height: 1, ..inner },
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("Starting Aptove...").style(Style::default().fg(Color::Yellow)),
+                    Rect { y: inner.y + 2, height: 1, ..inner },
+                );
+            }
         }
 
         WizardStep::Done => {
