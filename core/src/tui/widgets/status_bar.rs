@@ -35,7 +35,7 @@ pub fn render_status_bar(
 ) {
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
     let mut spans: Vec<Span> = vec![Span::styled(
-        format!(" Aptove Router v{}", version),
+        format!(" v{}", version),
         base,
     )];
 
@@ -64,11 +64,12 @@ pub fn render_status_bar(
     let mut right_spans: Vec<Span> = Vec::new();
     if let Some(v) = update_available {
         right_spans.push(Span::styled(
-            format!(" \u{2191} v{} [Ctrl+U]  ", v),
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            format!(" \u{2191} New version v{} ", v),
+            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::styled(
+            "[Ctrl+U to update]  ",
+            Style::default().bg(Color::DarkGray).fg(Color::Rgb(144, 238, 144)).add_modifier(Modifier::BOLD),
         ));
     }
     let cwd_text = format!("[path {}] ", cwd);
