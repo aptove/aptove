@@ -1,8 +1,8 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -31,6 +31,7 @@ pub fn render_status_bar(
     push_status: &PushStatus,
     keep_alive: bool,
     cwd: &str,
+    update_available: Option<&str>,
 ) {
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
     let mut spans: Vec<Span> = vec![Span::styled(
@@ -59,17 +60,30 @@ pub fn render_status_bar(
     spans.push(Span::styled("●", Style::default().bg(Color::DarkGray).fg(ka_color)));
     spans.push(Span::styled("]", base));
 
-    // Split area: left for existing indicators, right for the cwd label.
+    // Build right-side spans: optional update indicator + cwd label.
+    let mut right_spans: Vec<Span> = Vec::new();
+    if let Some(v) = update_available {
+        right_spans.push(Span::styled(
+            format!(" \u{2191} v{} [Ctrl+U]  ", v),
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let cwd_text = format!("[path {}] ", cwd);
-    let cwd_width = cwd_text.chars().count() as u16;
+    right_spans.push(Span::styled(cwd_text, base));
+
+    let right_width: u16 = right_spans.iter().map(|s| s.content.chars().count() as u16).sum();
+
     let [left_area, right_area] = Layout::horizontal([
         Constraint::Min(0),
-        Constraint::Length(cwd_width),
+        Constraint::Length(right_width),
     ]).areas(area);
 
     let left_para = Paragraph::new(Line::from(spans)).style(base);
     frame.render_widget(left_para, left_area);
 
-    let right_para = Paragraph::new(Line::from(vec![Span::styled(cwd_text, base)])).style(base);
+    let right_para = Paragraph::new(Line::from(right_spans)).style(base);
     frame.render_widget(right_para, right_area);
 }

@@ -46,6 +46,13 @@ pub enum AppEvent {
     TestPushResult(Result<bool, String>),
     /// Fired after a delay to trigger an automatic transport retry.
     RetryBridge,
+    /// Background version check completed. Some("1.4.1") = update available.
+    /// None = already up-to-date or network not reachable.
+    UpdateCheckResult(Option<String>),
+    /// A progress message from an in-progress binary download/replace.
+    UpdateProgress(String),
+    /// Self-update completed. Ok = new version string; Err = error message.
+    UpdateComplete(Result<String, String>),
 }
 
 /// Commands sent from the TUI to the bridge runner.

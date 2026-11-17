@@ -20,3 +20,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 anyhow = "1.0"
 local-ip-address = "0.6"
 crossterm = "0.29"
+self_update = { version = "0.39", default-features = false, features = [
+    "rustls",
+    "archive-tar",
+    "compression-flate2",
+    "archive-zip",
+    "compression-zip-deflate",
+] }
+semver = "1"

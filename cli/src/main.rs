@@ -14,6 +14,7 @@ use aptove_core::tui::{
 };
 
 mod plugins;
+mod updater;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,6 +52,30 @@ async fn run_tui() -> Result<()> {
         }
     });
 
-    let app = App::new(config, event_tx, log_level_arc);
+    // Background version check — fires once at startup, non-blocking.
+    let update_check_tx = event_tx.clone();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(updater::check_for_update).await;
+        let version = result.ok().flatten();
+        let _ = update_check_tx.send(AppEvent::UpdateCheckResult(version)).await;
+    });
+
+    // Update trigger channel: App sends () here when F5 is pressed;
+    // the watcher task below does the actual download+replace.
+    let (update_trigger_tx, mut update_trigger_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let update_download_tx = event_tx.clone();
+    tokio::spawn(async move {
+        while update_trigger_rx.recv().await.is_some() {
+            let _ = update_download_tx
+                .send(AppEvent::UpdateProgress("Downloading update...".to_string()))
+                .await;
+            let result = tokio::task::spawn_blocking(updater::perform_update)
+                .await
+                .unwrap_or_else(|_| Err("Update task panicked".to_string()));
+            let _ = update_download_tx.send(AppEvent::UpdateComplete(result)).await;
+        }
+    });
+
+    let app = App::new(config, event_tx, log_level_arc, Some(update_trigger_tx));
     app.run(event_rx).await
 }

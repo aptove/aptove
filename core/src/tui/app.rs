@@ -158,10 +158,25 @@ pub struct App {
 
     // Working directory (home-shortened) shown in the status bar.
     cwd: String,
+
+    // Update checker — set when a newer version is detected on GitHub.
+    update_available: Option<String>,
+    // True while a binary download+replace is running; prevents double-trigger.
+    update_in_progress: bool,
+    // Send () here to trigger a binary download+replace (wired in cli/main.rs).
+    // None in aptove-ent (which passes None to App::new).
+    update_trigger_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl App {
-    pub fn new(mut config: CommonConfig, event_tx: mpsc::Sender<AppEvent>, log_level_arc: Arc<AtomicU8>) -> Self {
+    /// `update_trigger_tx`: pass `Some(tx)` from the OSS CLI to enable in-TUI updates;
+    /// pass `None` from aptove-ent (or any consumer that manages updates externally).
+    pub fn new(
+        mut config: CommonConfig,
+        event_tx: mpsc::Sender<AppEvent>,
+        log_level_arc: Arc<AtomicU8>,
+        update_trigger_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    ) -> Self {
         // Grandfather existing installs: if the agent is already configured and the
         // user has never seen the keep-alive prompt, mark it as prompted so they are
         // not interrupted mid-session. New installs go through the wizard step below.
@@ -261,6 +276,9 @@ impl App {
             auto_retry: true,
             retry_count: 0,
             cwd,
+            update_available: None,
+            update_in_progress: false,
+            update_trigger_tx,
         }
     }
 
@@ -362,6 +380,7 @@ impl App {
                             keep_alive: self.keepalive.is_some(),
                             cwd: self.cwd.clone(),
                             copy_hint: if self.copy_hint_ticks > 0 { Some(self.copy_hint_msg.as_str()) } else { None },
+                            update_available: self.update_available.as_deref(),
                         };
                         // Build autocomplete entries for the renderer (no allocation if empty).
                         let ac_entries: Vec<AcEntry<'_>> = self.ac_matches.iter().map(|&i| AcEntry {
@@ -487,6 +506,35 @@ impl App {
             AppEvent::RetryBridge => {
                 if self.bridge_shutdown.is_none() && self.auto_retry && self.wizard.is_none() && !self.quit {
                     self.start_bridge();
+                }
+            }
+            AppEvent::UpdateCheckResult(version) => {
+                if let Some(v) = version {
+                    self.update_available = Some(v.clone());
+                    self.log_push(format!(
+                        "Update available: v{} — press Ctrl+U to install.",
+                        v
+                    ));
+                }
+                // None = already up-to-date or no network; silently ignore.
+            }
+            AppEvent::UpdateProgress(msg) => {
+                self.log_push(msg);
+            }
+            AppEvent::UpdateComplete(result) => {
+                self.update_in_progress = false;
+                match result {
+                    Ok(version) => {
+                        self.update_available = None;
+                        self.log_push(format!(
+                            "Updated to v{} — restart aptove to apply the update. \
+                             Your .aptove/ config is preserved.",
+                            version
+                        ));
+                    }
+                    Err(e) => {
+                        self.log_push_warn(format!("Update failed: {}", e));
+                    }
                 }
             }
         }
@@ -1312,6 +1360,13 @@ impl App {
                 self.update_autocomplete();
             }
 
+            // Ctrl+U: check for / install update.
+            // Guard must appear before the bare KeyCode::Char(c) arm or it is shadowed.
+            // Uses ASCII control code 0x15 — layout-independent, never intercepted by OS.
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.trigger_update();
+            }
+
             KeyCode::Char(c) => {
                 self.input.push(c);
                 self.update_autocomplete();
@@ -1327,6 +1382,7 @@ impl App {
                     self.auto_scroll = true;
                 }
             }
+
             _ => {}
         }
     }
@@ -1355,6 +1411,34 @@ impl App {
         if self.ac_matches.len() == 1 && COMMANDS[self.ac_matches[0]].0 == prefix {
             self.ac_matches.clear();
         }
+    }
+
+    /// Show the appropriate update popup. If already downloading, logs a message.
+    fn trigger_update(&mut self) {
+        if self.update_in_progress {
+            self.log_push("Update already in progress.".to_string());
+            return;
+        }
+        match &self.update_available {
+            None => {
+                self.popup = Some(PopupKind::UpdateNotAvailable);
+            }
+            Some(v) => {
+                self.popup = Some(PopupKind::UpdateConfirm { version: v.clone() });
+            }
+        }
+    }
+
+    /// Start the binary download after the user confirmed in the popup.
+    fn confirm_update(&mut self) {
+        let version = match &self.update_available {
+            Some(v) => v.clone(),
+            None => return,
+        };
+        let Some(tx) = &self.update_trigger_tx else { return };
+        self.update_in_progress = true;
+        let _ = tx.try_send(());
+        self.log_push(format!("Starting update to v{}...", version));
     }
 
     async fn handle_command(&mut self, cmd: &str) {
@@ -1511,6 +1595,23 @@ impl App {
                         self.log_push("Auth token rotated — reconnecting all transports.".to_string());
                         self.trigger_restart();
                     }
+                }
+                KeyCode::Esc => {
+                    self.close_popup();
+                }
+                _ => {}
+            }
+        }
+        Some(PopupKind::UpdateNotAvailable) => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
+                self.close_popup();
+            }
+        }
+        Some(PopupKind::UpdateConfirm { .. }) => {
+            match key.code {
+                KeyCode::Enter => {
+                    self.close_popup();
+                    self.confirm_update();
                 }
                 KeyCode::Esc => {
                     self.close_popup();

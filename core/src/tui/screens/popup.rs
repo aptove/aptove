@@ -41,6 +41,10 @@ pub enum PopupKind {
     TransportError,
     /// Confirmation prompt before rotating the auth token.
     RotateToken,
+    /// Shown when Ctrl+U is pressed but no update is available.
+    UpdateNotAvailable,
+    /// Shown when Ctrl+U is pressed and an update exists; Enter confirms download.
+    UpdateConfirm { version: String },
 }
 
 
@@ -69,6 +73,12 @@ pub fn render_popup(
         }
         PopupKind::RotateToken => {
             render_rotate_token_popup(frame);
+        }
+        PopupKind::UpdateNotAvailable => {
+            render_update_not_available_popup(frame);
+        }
+        PopupKind::UpdateConfirm { version } => {
+            render_update_confirm_popup(frame, version);
         }
     }
 }
@@ -411,4 +421,63 @@ fn render_log_level_popup(frame: &mut Frame, selected: usize) {
         ..inner
     };
     frame.render_widget(List::new(items), list_area);
+}
+
+// ── Update popups ─────────────────────────────────────────────────────────────
+
+fn render_update_not_available_popup(frame: &mut Frame) {
+    use ratatui::widgets::Wrap;
+    let area = centered_rect(56, 36, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Software Update ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Paragraph::new("Aptove is up to date.\nNo new update available.")
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 2, y: inner.y + 2, width: inner.width.saturating_sub(4), height: inner.height.saturating_sub(3) },
+    );
+
+    frame.render_widget(
+        Paragraph::new("⏎  Dismiss")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
+    );
+}
+
+fn render_update_confirm_popup(frame: &mut Frame, version: &str) {
+    use ratatui::widgets::Wrap;
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Update Available ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Paragraph::new(format!(
+            "v{} is ready to install.\n\n\
+             The binary will be replaced in-place.\n\
+             Your .aptove/ config is preserved.",
+            version
+        ))
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 2, y: inner.y + 1, width: inner.width.saturating_sub(4), height: inner.height.saturating_sub(3) },
+    );
+
+    frame.render_widget(
+        Paragraph::new("⏎  Install  ·  Esc  Cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
+    );
 }

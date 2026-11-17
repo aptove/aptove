@@ -22,6 +22,8 @@ pub struct RunningState<'a> {
     pub cwd: String,
     /// Brief message shown in the log indicator row (e.g. "✓ Copied!").
     pub copy_hint: Option<&'a str>,
+    /// New version string when an update is available (e.g. "1.4.1"), else None.
+    pub update_available: Option<&'a str>,
 }
 
 pub fn render_running(
@@ -52,5 +54,5 @@ pub fn render_running(
     }];
     render_log_panel(frame, chunks[0], logs, log_scroll, log_highlight, state.copy_hint);
     render_input_bar(frame, chunks[1], input, "Type / for commands", autocomplete);
-    render_status_bar(frame, chunks[2], version, &transports, &state.push_status, state.keep_alive, &state.cwd);
+    render_status_bar(frame, chunks[2], version, &transports, &state.push_status, state.keep_alive, &state.cwd, state.update_available);
 }
