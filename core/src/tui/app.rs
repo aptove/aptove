@@ -560,10 +560,6 @@ impl App {
                     w.step = WizardStep::PushWizardMenu { selected: 0 };
                 }
             }
-            WizardStep::QrWizardStep { .. } => {
-                // Finish wizard; bridge is already running.
-                self.finish_wizard_qr_done();
-            }
             WizardStep::KeepAlivePrompt { .. } if came_through_push_menu => {
                 // Back to push menu, pre-selecting the current push choice.
                 let sel = match self.config.push_selection {
@@ -796,10 +792,6 @@ impl App {
                 }
             }
 
-            Some(WizardStep::QrWizardStep { .. }) => {
-                self.finish_wizard_qr_done();
-            }
-
             Some(WizardStep::KeepAlivePrompt { selected }) => {
                 self.config.keep_alive = selected == 1;
                 self.config.keep_alive_prompted = true;
@@ -968,23 +960,18 @@ impl App {
     }
 
     fn advance_to_qr_step(&mut self) {
-        if let Some(ref mut w) = self.wizard {
-            w.step = WizardStep::QrWizardStep { qr_string: None, pairing_url: None };
-        }
-        self.show_qr_on_ready = false; // wizard shows QR inline; no popup needed
+        // Close wizard and go to running screen.
+        self.wizard = None;
+        self.screen = Screen::Running;
+        self.needs_clear = true;
+        self.agent_only_restart = false;
+        // Auto-open the standard /qr popup as soon as the bridge is ready.
+        self.show_qr_on_ready = true;
         self.auto_retry = true;
         self.retry_count = 0;
         if self.bridge_shutdown.is_none() {
             self.start_bridge();
         }
-    }
-
-    fn finish_wizard_qr_done(&mut self) {
-        self.wizard = None;
-        self.screen = Screen::Running;
-        self.needs_clear = true;
-        self.agent_only_restart = false;
-        // Bridge is already running. No restart, no push popup (configured in wizard).
     }
 
     /// Close the active popup and schedule a full clear before the next draw
@@ -1788,14 +1775,6 @@ impl App {
                     self.popup = None;
                     self.needs_clear = true;
                 }
-                // Also auto-close the wizard QR step when pairing completes.
-                let in_qr_step = matches!(
-                    self.wizard.as_ref().map(|w| &w.step),
-                    Some(WizardStep::QrWizardStep { .. })
-                );
-                if in_qr_step {
-                    self.finish_wizard_qr_done();
-                }
             }
             BridgeEvent::PairingUrlReady { url, transport } => {
                 debug!("Pairing URL ready for transport: {}", transport);
@@ -1804,13 +1783,6 @@ impl App {
                 // Pre-render QR string.
                 if let Ok(qr) = crate::qr::render_qr_code(&url) {
                     self.qr_string = Some(qr);
-                }
-                // If the wizard is showing QrWizardStep, populate it now.
-                if let Some(ref mut w) = self.wizard {
-                    if let WizardStep::QrWizardStep { ref mut qr_string, ref mut pairing_url } = w.step {
-                        *qr_string = self.qr_string.clone();
-                        *pairing_url = Some(url.clone());
-                    }
                 }
                 // Auto-open QR popup after wizard completion so the user can
                 // pair their mobile client immediately.

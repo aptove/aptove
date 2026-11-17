@@ -59,13 +59,6 @@ pub enum WizardStep {
         field_idx: usize,
         error: Option<String>,
     },
-    /// Final wizard step: displays the QR pairing code.
-    /// The bridge is started when this step is entered; qr_string/pairing_url
-    /// are populated when PairingUrlReady fires.
-    QrWizardStep {
-        qr_string: Option<String>,
-        pairing_url: Option<String>,
-    },
     /// First-run keep-alive prompt: ask the user whether to prevent idle sleep.
     KeepAlivePrompt {
         /// 0 = No (default off), 1 = Yes (enable keep-alive).
@@ -623,36 +616,6 @@ pub fn render_wizard(frame: &mut Frame, state: &WizardState) {
                 setup_note,
             );
             render_form_dynamic(frame, inner, &labels, &values, *field_idx, error.as_deref());
-        }
-
-        WizardStep::QrWizardStep { qr_string, pairing_url } => {
-            let hint = if qr_string.is_some() { "Enter continue" } else { "" };
-            let inner = wizard_panel(frame, "Scan QR Code", hint, setup_note);
-
-            if let (Some(qr), Some(url)) = (qr_string, pairing_url) {
-                // Render QR code — it may be tall, so we let it clip naturally.
-                frame.render_widget(
-                    Paragraph::new(qr.as_str()).style(Style::default().fg(Color::White)),
-                    Rect { y: inner.y + 1, height: inner.height.saturating_sub(5), ..inner },
-                );
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled("Scan with ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Aptove", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                        Span::styled(" on your phone", Style::default().fg(Color::DarkGray)),
-                    ])),
-                    Rect { y: inner.y + inner.height.saturating_sub(4), height: 1, ..inner },
-                );
-                frame.render_widget(
-                    Paragraph::new(url.as_str()).style(Style::default().fg(Color::DarkGray)),
-                    Rect { y: inner.y + inner.height.saturating_sub(3), height: 1, ..inner },
-                );
-            } else {
-                frame.render_widget(
-                    Paragraph::new("Starting Aptove...").style(Style::default().fg(Color::Yellow)),
-                    Rect { y: inner.y + 2, height: 1, ..inner },
-                );
-            }
         }
 
         WizardStep::Done => {
