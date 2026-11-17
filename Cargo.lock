@@ -160,6 +160,7 @@ dependencies = [
  "aptove-core",
  "crossterm",
  "local-ip-address",
+ "rustls",
  "self_update",
  "semver",
  "tokio",

@@ -18,6 +18,11 @@ mod updater;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install ring as the process-level rustls crypto provider before any TLS work.
+    // Required when multiple crates in the process use rustls 0.23+ (e.g. tokio-rustls
+    // and self_update/ureq both use rustls; without this call rustls panics at runtime).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Register OSS transports: Local and Tailscale.
     transport::init(plugins::oss_transports());
 

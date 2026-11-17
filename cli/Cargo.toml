@@ -31,3 +31,4 @@ self_update = { version = "1", default-features = false, features = [
     "compression-zip-deflate",
 ] }
 semver = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
