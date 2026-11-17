@@ -10,7 +10,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// (without leading "v") if one is available, or None if already up-to-date
 /// or if the network is unreachable. Intended to run via spawn_blocking.
 pub fn check_for_update() -> Option<String> {
-    let release = Update::configure()
+    let releases = Update::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .bin_name(BIN_NAME)
@@ -23,7 +23,8 @@ pub fn check_for_update() -> Option<String> {
         .get_latest_release()
         .ok()?;
 
-    let version_str = release.version.trim_start_matches('v');
+    let release = releases.latest()?;
+    let version_str = release.version().trim_start_matches('v');
     let latest = Version::parse(version_str).ok()?;
     let current = Version::parse(CURRENT_VERSION).ok()?;
     if latest > current {
