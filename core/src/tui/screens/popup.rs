@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::tui::widgets::qr_popup::{centered_rect, copy_btn_at, parse_pairing_fields, render_qr_popup};
+use crate::tui::screens::wizard::render_form_dynamic;
 
 /// Log level options shown in the picker (name, u8 value).
 pub const LOG_LEVELS: &[(&str, u8)] = &[
@@ -25,7 +26,7 @@ pub enum PushPopupStep {
     Menu { selected: usize, active: usize },
     /// Aptove form: fields = [client_id, client_secret].
     AptoveForm { fields: [String; 2], field_idx: usize, error: Option<String> },
-    /// Self-managed form: fields = [push_url, token_url, client_id, client_secret].
+    /// Self-managed form: fields = [token_url, push_url, client_id, client_secret].
     SelfManagedForm { fields: [String; 4], field_idx: usize, error: Option<String> },
 }
 
@@ -85,11 +86,12 @@ pub fn render_popup(
 
 // ── Push configuration ────────────────────────────────────────────────────────
 
-const PUSH_DOC_URL: &str = "https://docs.aptove.com/bridge/push";
 const PUSH_REGISTER_URL: &str = "https://dash.aptove.com";
+pub(crate) const PUSH_SERVICE_DOCS_URL: &str = "https://docs.aptove.com/push-service/overview";
+pub(crate) const PUSH_SERVER_DOCS_URL: &str  = "https://docs.aptove.com/push-server/overview";
 const PUSH_MENU_LABELS: &[&str] = &[
-    "No Push  (buffer messages, no notifications)",
-    "Aptove Push Service",
+    "No Push",
+    "Aptove Push Service  (recommended)",
     "Self Managed Push Server",
 ];
 
@@ -131,22 +133,41 @@ fn render_push_menu(frame: &mut Frame, selected: usize, active: usize) {
     let list_area = Rect { y: inner.y + 1, height: 3, ..inner };
     frame.render_widget(List::new(items), list_area);
 
+    // Context-sensitive content below the list (matches wizard behaviour).
+    match selected {
+        0 => {
+            frame.render_widget(
+                Paragraph::new("Without push, messages buffer locally and deliver when the app reconnects.")
+                    .style(Style::default().fg(Color::DarkGray)),
+                Rect { y: inner.y + 5, height: 1, ..inner },
+            );
+        }
+        1 => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Learn more: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(PUSH_SERVICE_DOCS_URL, Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
+                ])),
+                Rect { y: inner.y + 5, height: 1, ..inner },
+            );
+        }
+        _ => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Learn more: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(PUSH_SERVER_DOCS_URL, Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
+                ])),
+                Rect { y: inner.y + 5, height: 1, ..inner },
+            );
+        }
+    }
+
     // Hint.
-    let hint_y = inner.y + inner.height.saturating_sub(2);
+    let hint_y = inner.y + inner.height.saturating_sub(1);
     frame.render_widget(
         Paragraph::new("↑/↓ navigate   Enter select   Esc cancel")
             .style(Style::default().fg(Color::DarkGray)),
         Rect { y: hint_y, height: 1, ..inner },
-    );
-
-    // Footer docs link (clickable).
-    let footer_y = inner.y + inner.height.saturating_sub(1);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Docs: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(PUSH_DOC_URL, Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
-        ])),
-        Rect { y: footer_y, height: 1, ..inner },
     );
 }
 
@@ -170,14 +191,17 @@ fn render_aptove_form(frame: &mut Frame, fields: &[String; 2], field_idx: usize,
         Rect { y: inner.y + 1, height: 1, ..inner },
     );
 
-    // Fields.
+    // Fields (leave 1 row at the bottom for the hint).
     let labels = ["Client ID:", "Client Secret:"];
-    for (i, &label) in labels.iter().enumerate() {
-        let y = inner.y + 3 + (i as u16) * 2;
-        push_field(frame, y, inner.x, inner.width, label, &fields[i], i == field_idx);
-    }
+    let form_area = Rect { y: inner.y + 3, height: inner.height.saturating_sub(4), ..inner };
+    render_form_dynamic(frame, form_area, &labels, fields.as_slice(), field_idx, error);
 
-    push_footer(frame, inner, error, "\u{2191}/\u{2193} navigate   Enter confirm   Esc back");
+    // Hint.
+    frame.render_widget(
+        Paragraph::new("\u{2191}/\u{2193} navigate   Enter confirm   Esc back")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
+    );
 }
 
 fn render_self_managed_form(frame: &mut Frame, fields: &[String; 4], field_idx: usize, error: Option<&str>) {
@@ -191,61 +215,16 @@ fn render_self_managed_form(frame: &mut Frame, fields: &[String; 4], field_idx: 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Fields.
-    let labels = ["Push Service URL:", "Token Service URL:", "Client ID:", "Client Secret:"];
-    for (i, &label) in labels.iter().enumerate() {
-        let y = inner.y + 1 + (i as u16) * 2;
-        push_field(frame, y, inner.x, inner.width, label, &fields[i], i == field_idx);
-    }
+    // Fields (token URL first, matching wizard order; leave 1 row at bottom for hint).
+    let labels = ["Token Service URL:", "Push Service URL:", "Client ID:", "Client Secret:"];
+    let form_area = Rect { y: inner.y + 1, height: inner.height.saturating_sub(2), ..inner };
+    render_form_dynamic(frame, form_area, &labels, fields.as_slice(), field_idx, error);
 
-    push_footer(frame, inner, error, "\u{2191}/\u{2193} navigate   Enter confirm   Esc back");
-}
-
-/// Render a single labelled form field with cursor.
-fn push_field(frame: &mut Frame, y: u16, x: u16, width: u16, label: &str, value: &str, active: bool) {
-    let label_w = 20u16.min(width / 2);
-    let label_style = if active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
+    // Hint.
     frame.render_widget(
-        Paragraph::new(label).style(label_style),
-        Rect { x, y, width: label_w, height: 1 },
-    );
-    let cursor = if active { "█" } else { "" };
-    let val_style = if active {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    frame.render_widget(
-        Paragraph::new(format!("[{}{}]", value, cursor)).style(val_style),
-        Rect { x: x + label_w, y, width: width.saturating_sub(label_w), height: 1 },
-    );
-}
-
-/// Render hint, optional error, and docs footer inside a form popup.
-fn push_footer(frame: &mut Frame, inner: Rect, error: Option<&str>, hint: &str) {
-    if let Some(err) = error {
-        let y = inner.y + inner.height.saturating_sub(3);
-        frame.render_widget(
-            Paragraph::new(format!("Error: {}", err)).style(Style::default().fg(Color::Red)),
-            Rect { y, height: 1, ..inner },
-        );
-    }
-    let hint_y = inner.y + inner.height.saturating_sub(2);
-    frame.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
-        Rect { y: hint_y, height: 1, ..inner },
-    );
-    let footer_y = inner.y + inner.height.saturating_sub(1);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Docs: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(PUSH_DOC_URL, Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
-        ])),
-        Rect { y: footer_y, height: 1, ..inner },
+        Paragraph::new("\u{2191}/\u{2193} navigate   Enter confirm   Esc back")
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect { y: inner.y + inner.height.saturating_sub(1), height: 1, ..inner },
     );
 }
 
@@ -299,10 +278,15 @@ pub fn url_at(kind: &PopupKind, col: u16, row: u16, term: Rect) -> Option<&'stat
 
     if let PopupKind::PushConfig { step } = kind {
         match step {
-            PushPopupStep::Menu { .. } => {
+            PushPopupStep::Menu { selected, .. } => {
+                // Context-sensitive link at y+5 (items 1 and 2 only; item 0 shows a note).
                 let inner = border_inner(centered_rect(66, 55, term));
-                if on_row(inner, inner.y + inner.height.saturating_sub(1)) {
-                    return Some(PUSH_DOC_URL);
+                if on_row(inner, inner.y + 5) {
+                    return match selected {
+                        1 => Some(PUSH_SERVICE_DOCS_URL),
+                        2 => Some(PUSH_SERVER_DOCS_URL),
+                        _ => None,
+                    };
                 }
             }
             PushPopupStep::AptoveForm { .. } => {
@@ -310,16 +294,8 @@ pub fn url_at(kind: &PopupKind, col: u16, row: u16, term: Rect) -> Option<&'stat
                 if on_row(inner, inner.y + 1) {
                     return Some(PUSH_REGISTER_URL);
                 }
-                if on_row(inner, inner.y + inner.height.saturating_sub(1)) {
-                    return Some(PUSH_DOC_URL);
-                }
             }
-            PushPopupStep::SelfManagedForm { .. } => {
-                let inner = border_inner(centered_rect(72, 72, term));
-                if on_row(inner, inner.y + inner.height.saturating_sub(1)) {
-                    return Some(PUSH_DOC_URL);
-                }
-            }
+            PushPopupStep::SelfManagedForm { .. } => {}
         }
     }
     None

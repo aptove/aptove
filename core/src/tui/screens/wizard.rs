@@ -8,8 +8,7 @@ use ratatui::{
 
 const AGENT_DOCS_URL: &str = "https://docs.aptove.com/aptove/agent#available-agents";
 const TRANSPORT_DOCS_URL: &str = "https://docs.aptove.com/aptove/transports";
-const PUSH_SERVICE_DOCS_URL: &str = "https://docs.aptove.com/push-service/overview";
-const PUSH_SERVER_DOCS_URL: &str = "https://docs.aptove.com/push-server/overview";
+use crate::tui::screens::popup::{PUSH_SERVICE_DOCS_URL, PUSH_SERVER_DOCS_URL};
 
 use crate::common_config::CommonConfig;
 use crate::tailscale::{is_tailscale_available, is_tailscale_installed};
@@ -656,7 +655,7 @@ fn wizard_panel(frame: &mut Frame, title: &str, hint: &str, note: Option<&str>) 
     inner
 }
 
-fn render_form_dynamic(
+pub(crate) fn render_form_dynamic(
     frame: &mut Frame,
     area: Rect,
     labels: &[&str],

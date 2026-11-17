@@ -1661,13 +1661,14 @@ impl App {
                         });
                     }
                     _ => {
-                        // Self Managed — pre-populate from custom_push_relay if present
-                        let (pu, tu, cid, csec) = match &self.config.custom_push_relay {
-                            Some(pr) => (pr.url.clone(), pr.token_url.clone(), pr.client_id.clone(), pr.client_secret.clone()),
+                        // Self Managed — pre-populate from custom_push_relay if present.
+                        // Field order: [token_url, push_url, client_id, client_secret] matching label order.
+                        let (tu, pu, cid, csec) = match &self.config.custom_push_relay {
+                            Some(pr) => (pr.token_url.clone(), pr.url.clone(), pr.client_id.clone(), pr.client_secret.clone()),
                             None => (String::new(), String::new(), String::new(), String::new()),
                         };
                         self.popup = Some(PopupKind::PushConfig {
-                            step: PushPopupStep::SelfManagedForm { fields: [pu, tu, cid, csec], field_idx: 0, error: None },
+                            step: PushPopupStep::SelfManagedForm { fields: [tu, pu, cid, csec], field_idx: 0, error: None },
                         });
                     }
                 }
@@ -1766,8 +1767,8 @@ impl App {
                             step: PushPopupStep::SelfManagedForm { fields, field_idx: field_idx + 1, error: None },
                         });
                     } else {
-                        let push_url = fields[0].trim().to_string();
-                        let token_url = fields[1].trim().to_string();
+                        let token_url = fields[0].trim().to_string();
+                        let push_url  = fields[1].trim().to_string();
                         let client_id = fields[2].trim().to_string();
                         let client_secret = fields[3].trim().to_string();
                         if push_url.is_empty() || token_url.is_empty() || client_id.is_empty() || client_secret.is_empty() {
