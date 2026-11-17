@@ -46,13 +46,18 @@ pub fn render_status_bar(
         spans.push(Span::styled("]", base));
     }
 
-    let push_dot_color = match push_status {
-        PushStatus::Disabled => Color::DarkGray,
-        PushStatus::Ok       => Color::Green,
-        PushStatus::Error    => Color::Red,
-    };
     spans.push(Span::styled("  [push ", base));
-    spans.push(Span::styled("●", Style::default().bg(Color::DarkGray).fg(push_dot_color)));
+    match push_status {
+        PushStatus::Disabled => {
+            spans.push(Span::styled("x", Style::default().bg(Color::DarkGray).fg(Color::White)));
+        }
+        PushStatus::Ok => {
+            spans.push(Span::styled("●", Style::default().bg(Color::DarkGray).fg(Color::Green)));
+        }
+        PushStatus::Error => {
+            spans.push(Span::styled("●", Style::default().bg(Color::DarkGray).fg(Color::Red)));
+        }
+    }
     spans.push(Span::styled("]", base));
 
     let ka_color = if keep_alive { Color::Green } else { Color::Red };
