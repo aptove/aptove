@@ -43,8 +43,8 @@ pub fn content_suffix(text: &str, max_chars: usize) -> String {
 /// Use when logging device tokens or other opaque credentials so the log entry
 /// is useful for correlation without leaking the full value.
 pub fn redact_token(token: &str) -> String {
-    let visible = token.len().min(8);
-    format!("{}...", &token[..visible])
+    let prefix: String = token.chars().take(8).collect();
+    format!("{}...", prefix)
 }
 
 pub struct FileLogLayer {
