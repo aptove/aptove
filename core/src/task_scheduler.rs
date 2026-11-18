@@ -121,7 +121,22 @@ pub async fn save_task_async(dir: &Path, task: &ScheduledTask) -> std::io::Resul
 }
 
 /// Delete a task file.
+///
+/// Rejects ids that contain path separators (`/`, `\`), start with `.`, or
+/// contain null bytes, to prevent a paired client from traversing outside the
+/// tasks directory.
 pub fn delete_task(dir: &Path, id: &str) -> std::io::Result<()> {
+    if id.is_empty()
+        || id.starts_with('.')
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains('\0')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid task id",
+        ));
+    }
     let path = dir.join(format!("{}.json", id));
     std::fs::remove_file(path)
 }
@@ -747,5 +762,42 @@ mod tests {
         } else {
             panic!("Expected Recurring schedule");
         }
+    }
+
+    #[test]
+    fn delete_task_rejects_path_traversal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = delete_task(dir.path(), "../other").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn delete_task_rejects_absolute_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = delete_task(dir.path(), "/etc/passwd").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn delete_task_rejects_dotfile_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = delete_task(dir.path(), ".hidden").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn delete_task_accepts_uuid_format() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        std::fs::write(dir.path().join(format!("{}.json", id)), b"{}").unwrap();
+        assert!(delete_task(dir.path(), id).is_ok());
+    }
+
+    #[test]
+    fn delete_task_accepts_human_readable_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let id = "my-daily-task";
+        std::fs::write(dir.path().join(format!("{}.json", id)), b"{}").unwrap();
+        assert!(delete_task(dir.path(), id).is_ok());
     }
 }
