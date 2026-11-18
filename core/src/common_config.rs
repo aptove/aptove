@@ -188,17 +188,15 @@ pub struct CommonConfig {
     #[serde(default = "log_message_content_default", skip_serializing_if = "is_false")]
     pub log_message_content: bool,
 
-    /// Use a generic "Aptove" title in push notifications instead of the agent
-    /// name (default: `true`).
+    /// Use a generic `"Aptove"` title in push notifications instead of `agent_name`
+    /// (default: `false`).
     ///
-    /// The agent name defaults to the working-directory folder name, which may
-    /// reveal a client name, project name, or other sensitive information to the
-    /// push relay, Apple APNs, or Google FCM.  When this is `true` the title
-    /// sent is always `"Aptove"`; `agentName` is still included in the
-    /// notification data payload so the iOS app can route the tap correctly.
-    /// Set to `false` only if you are comfortable with the agent name leaving
-    /// the machine.
-    #[serde(default = "push_generic_title_default", skip_serializing_if = "is_true")]
+    /// When `false` (the default), the notification title is the value of
+    /// `agent_name` — typically the working-directory folder name. Set to `true`
+    /// for privacy: the title is always `"Aptove"` and `agent_name` is omitted
+    /// from the notification payload entirely, so it never reaches the push relay,
+    /// Apple APNs, or Google FCM.
+    #[serde(default = "push_generic_title_default")]
     pub push_generic_title: bool,
 }
 
@@ -209,9 +207,8 @@ fn log_file_count_default() -> usize { 5 }
 fn memory_max_kb_default() -> u64 { 1024 }
 fn ws_max_message_mb_default() -> u64 { 50 }
 fn log_message_content_default() -> bool { false }
-fn push_generic_title_default() -> bool { true }
+fn push_generic_title_default() -> bool { false }
 fn is_false(v: &bool) -> bool { !v }
-fn is_true(v: &bool) -> bool { *v }
 
 /// Configuration for a single transport.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -262,7 +259,7 @@ impl Default for CommonConfig {
             last_transport: None,
             agent_name: None,
             log_message_content: false,
-            push_generic_title: true,
+            push_generic_title: false,
         }
     }
 }
