@@ -303,8 +303,16 @@ impl PushRelayClient {
         }
 
         let url = format!("{}/push", self.relay_url);
-        let mut data = HashMap::new();
-        data.insert("agentName".to_string(), agent_name.to_string());
+        // When generic_title is enabled the user has opted out of sending identifying
+        // information to APNs/FCM. Omit agentName from the data payload entirely so
+        // the agent name does not leak even though the title is obscured.
+        let data: Option<HashMap<String, String>> = if self.generic_title {
+            None
+        } else {
+            let mut m = HashMap::new();
+            m.insert("agentName".to_string(), agent_name.to_string());
+            Some(m)
+        };
         let title = if self.generic_title {
             "Aptove".to_string()
         } else {
@@ -313,7 +321,7 @@ impl PushRelayClient {
         let body = PushRequest {
             title,
             body: "Your agent has new activity".to_string(),
-            data: Some(data),
+            data,
         };
 
         info!("🔔 Sending push notification via relay for agent '{}'", agent_name);
