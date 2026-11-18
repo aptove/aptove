@@ -272,6 +272,7 @@ pub async fn run_bridge(
     let tasks_dir = config_dir.join("tasks");
     if !tasks_dir.exists() {
         let _ = std::fs::create_dir_all(&tasks_dir);
+        let _ = crate::file_permissions::restrict_dir_to_owner(&tasks_dir);
     }
     crate::task_scheduler::ensure_default_tasks(&tasks_dir);
     bridge = bridge.with_tasks_dir(tasks_dir.clone());
