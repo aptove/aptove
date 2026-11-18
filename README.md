@@ -149,14 +149,35 @@ A built-in **Compact Memory** task runs periodically to merge and summarise `MEM
 
 ### Task file format (`~/.aptove/projects/<your-project-path>/tasks/<id>.json`)
 
+Recurring task (runs every day at 18:00 New York time):
+
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "Daily Summary",
   "prompt": "Summarise what happened today and update MEMORY.md.",
   "enabled": true,
-  "schedule": { "type": "cron", "cron": "0 18 * * *", "timezone": "America/New_York" },
-  "next_run_at": "2025-01-02T23:00:00Z"
+  "createdAt": "2025-01-01T00:00:00Z",
+  "schedule": {
+    "type": "recurring",
+    "frequency": "daily",
+    "time": "18:00",
+    "timezone": "America/New_York"
+  },
+  "nextRunAt": "2025-01-02T23:00:00Z"
+}
+```
+
+One-time task (fires once at the specified time, then the file is deleted):
+
+```json
+{
+  "id": "661f9511-f30c-52e5-b827-557766551111",
+  "name": "Kick-off reminder",
+  "prompt": "Remind me about the project kick-off meeting.",
+  "enabled": true,
+  "createdAt": "2025-01-01T00:00:00Z",
+  "schedule": { "type": "once", "at": "2025-01-10T14:00:00Z" }
 }
 ```
 
@@ -291,7 +312,7 @@ Run `aptove` and pick an agent from the setup wizard, or change it at any time v
 
 - **Auth token**: auto-generated 32-byte random value, stored in `common.toml` (`0600`). Transmitted to mobile during QR pairing and stored in the device Keychain.
 - **TLS**: self-signed certificate generated on first run. Certificate fingerprint is included in the QR pairing payload and pinned by the mobile app to prevent MITM attacks.
-- **Pairing codes**: 6-digit, single-use, expire after 60 seconds. Rate-limited to 5 attempts per code.
+- **Pairing codes**: 6-digit, single-use, expire after 60 seconds. Rate-limited to 5 attempts per code per source IP.
 - **`common.toml`**: contains all secrets. Permissions are set to `0600` automatically. Keep it secure.
 - **Agent command**: saved to `agent_command` in `common.toml` by the setup wizard. It can be changed at any time via the `/agent` TUI command. Aptove Router is an operator tool: whoever can invoke it already has local shell access, so the agent command is implicitly trusted to the same degree as any other command that user could run.
 

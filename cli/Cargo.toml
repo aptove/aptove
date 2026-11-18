@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Saltuk Alakus <saltukalakus@gmail.com>"]
 description = "A secure bridge between ACP agents and mobile apps"
 repository = "https://github.com/aptove/aptove"
-license = "MIT"
+license = "Apache-2.0"
 homepage = "https://github.com/aptove/aptove"
 readme = "../README.md"
 
