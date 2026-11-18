@@ -2928,6 +2928,16 @@ async fn files_content_response(working_dir: &std::path::Path, path: &str) -> St
         None => return file_browse_error("bridge/files/contentResponse", path, "forbidden"),
     };
 
+    // Block dotfiles and dot-directories anywhere in the resolved path.
+    // Strip the working-dir prefix and reject if any component starts with '.'.
+    let base = working_dir.canonicalize().unwrap_or_else(|_| working_dir.to_path_buf());
+    let rel = target.strip_prefix(&base).unwrap_or(target.as_path());
+    if rel.components().any(|c| {
+        c.as_os_str().to_str().map_or(false, |s| s.starts_with('.'))
+    }) {
+        return file_browse_error("bridge/files/contentResponse", path, "forbidden");
+    }
+
     if target.is_dir() {
         return file_browse_error("bridge/files/contentResponse", path, "is_directory");
     }
@@ -3152,6 +3162,37 @@ mod file_browse_tests {
     async fn files_content_response_forbids_traversal() {
         let dir = TempDir::new().unwrap();
         let resp = files_content_response(dir.path(), "../../etc/passwd").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["error"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn files_content_blocks_dotfile_at_root() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".env"), b"SECRET=foo").unwrap();
+        let resp = files_content_response(dir.path(), ".env").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["error"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn files_content_blocks_nested_dotfile() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".hidden"), b"hidden").unwrap();
+        let resp = files_content_response(dir.path(), "src/.hidden").await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["params"]["error"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn files_content_blocks_dotdir_traversal() {
+        let dir = TempDir::new().unwrap();
+        let dotdir = dir.path().join(".git");
+        std::fs::create_dir_all(&dotdir).unwrap();
+        std::fs::write(dotdir.join("config"), b"[core]").unwrap();
+        let resp = files_content_response(dir.path(), ".git/config").await;
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["params"]["error"], "forbidden");
     }
