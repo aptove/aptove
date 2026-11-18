@@ -336,13 +336,19 @@ impl CommonConfig {
     }
 
     /// Save to `common.toml` in a specific directory with 0600 permissions.
+    ///
+    /// Uses an atomic write (write to `.tmp`, restrict permissions, rename) so
+    /// the final file is never world-readable, even for a brief window.
     pub fn save_to_dir(&self, dir: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;
         let path = dir.join("common.toml");
+        let tmp_path = dir.join("common.toml.tmp");
         let text = toml::to_string_pretty(self).context("Failed to serialize CommonConfig")?;
-        fs::write(&path, &text).with_context(|| format!("Failed to write {:?}", path))?;
-        crate::file_permissions::restrict_file_to_owner(&path)
-            .with_context(|| format!("Failed to set permissions on {:?}", path))?;
+        fs::write(&tmp_path, &text).with_context(|| format!("Failed to write {:?}", tmp_path))?;
+        crate::file_permissions::restrict_file_to_owner(&tmp_path)
+            .with_context(|| format!("Failed to set permissions on {:?}", tmp_path))?;
+        fs::rename(&tmp_path, &path)
+            .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path))?;
         Ok(())
     }
 
