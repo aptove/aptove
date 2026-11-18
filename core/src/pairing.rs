@@ -81,9 +81,10 @@ pub struct PairingManager {
     used: AtomicBool,
     /// Number of failed validation attempts per client IP (for rate limiting).
     /// Keyed by the string representation of the connecting IP address so that
-    /// different devices have independent counters.  Under `tailscale serve` all
-    /// tailnet peers appear as 127.0.0.1 (the daemon does not inject
-    /// X-Forwarded-For), so the counter is shared across the tailnet in that case.
+    /// different devices have independent counters.  Under `tailscale serve`,
+    /// Tailscale injects `X-Forwarded-For` via its local proxy; the bridge
+    /// trusts forwarding headers from loopback connections, so each tailnet
+    /// peer gets its own independent counter.
     attempts: Mutex<HashMap<String, u32>>,
     /// Connection details to return on successful pairing
     websocket_url: String,
