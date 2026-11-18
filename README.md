@@ -78,8 +78,10 @@ tls     = true
 [transports.tailscale-serve]
 enabled = false
 
-# Optional — enables push notifications (see Push Notifications section below)
-[push_relay]
+# Push notification provider: "none", "aptove", or "custom" (see Push Notifications section below)
+push_selection = "aptove"
+
+[aptove_push_relay]
 url           = "https://push.aptove.com"
 token_url     = "https://token.aptove.com"
 client_id     = "your-client-id"
@@ -210,17 +212,20 @@ A 30-second per-client debounce prevents notification storms when the agent is v
 
 ### Setup
 
-Configure push via the `/push` TUI command or add the `[push_relay]` section directly to `common.toml`:
+Configure push via the `/push` TUI command or edit `common.toml` directly:
 
 ```toml
-[push_relay]
+# Select the push provider: "none", "aptove", or "custom"
+push_selection = "aptove"
+
+[aptove_push_relay]
 url           = "https://push.aptove.com"   # Push relay base URL
 token_url     = "https://token.aptove.com"  # JWT token service URL
 client_id     = "your-client-id"            # M2M client ID (JWT sub)
 client_secret = "your-client-secret"        # M2M client secret
 ```
 
-All four fields are required. If the section is absent or any field is empty, push is silently disabled. The push relay URL is included in the QR pairing payload so the mobile app knows where to register its device token.
+All four fields in the relay section are required. Set `push_selection = "none"` to disable push without erasing your saved credentials. Use `[custom_push_relay]` with the same fields to point at a self-hosted relay instead. The push relay URL is included in the QR pairing payload so the mobile app knows where to register its device token.
 
 ### Security
 
