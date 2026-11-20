@@ -388,7 +388,7 @@ impl StdioBridge {
                                         }
                                         Err(e) => {
                                             warn!("🚫 TLS handshake failed: {}", e);
-                                            Err(anyhow::anyhow!("TLS handshake failed: {}", e))
+                                            Ok(())
                                         }
                                     }
                                 } else {

@@ -8,15 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-
-/// Global custom config directory for CommonConfig (set via --config-dir).
-static COMMON_CUSTOM_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-/// Set a custom config directory (call before any config operations).
-pub fn set_config_dir(path: PathBuf) {
-    COMMON_CUSTOM_CONFIG_DIR.set(path).ok();
-}
 
 /// A slash command advertised to connected clients via `available_commands_update`.
 ///
@@ -270,41 +261,33 @@ impl CommonConfig {
         Self::config_dir().join("common.toml")
     }
 
-    /// Config directory (system default or custom override).
-    ///
-    /// Default location is keyed by the current working directory so each
+    /// Config directory, keyed by the current working directory so each
     /// project gets an isolated config, but nothing is written into the
     /// project folder itself:
     ///
     /// - macOS / Linux: `~/.aptove/projects/<cwd_without_leading_slash>/`
     ///   e.g. `~/.aptove/projects/Users/alice/code/my-project/`
     /// - Windows: `%APPDATA%\Aptove\projects\<cwd_without_drive_prefix>\`
-    ///
-    /// Pass `--config-dir` (calls `set_config_dir`) to override.
     pub fn config_dir() -> PathBuf {
-        let dir = if let Some(custom) = COMMON_CUSTOM_CONFIG_DIR.get() {
-            custom.clone()
-        } else {
-            #[cfg(windows)]
-            let base = BaseDirs::new()
-                .map(|b| b.data_dir().to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming"))
-                .join("Aptove");
-            #[cfg(not(windows))]
-            let base = BaseDirs::new()
-                .map(|b| b.home_dir().join(".aptove"))
-                .unwrap_or_else(|| PathBuf::from("/tmp/.aptove"));
+        #[cfg(windows)]
+        let base = BaseDirs::new()
+            .map(|b| b.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming"))
+            .join("Aptove");
+        #[cfg(not(windows))]
+        let base = BaseDirs::new()
+            .map(|b| b.home_dir().join(".aptove"))
+            .unwrap_or_else(|| PathBuf::from("/tmp/.aptove"));
 
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            // Strip leading root dir (`/`) or Windows drive prefix (`C:\`) so
-            // the path can be joined cleanly under the base directory.
-            let cwd_rel: PathBuf = cwd.components()
-                .filter(|c| !matches!(c,
-                    std::path::Component::RootDir | std::path::Component::Prefix(_)))
-                .collect();
-            base.join("projects").join(cwd_rel)
-        };
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+        // Strip leading root dir (`/`) or Windows drive prefix (`C:\`) so
+        // the path can be joined cleanly under the base directory.
+        let cwd_rel: PathBuf = cwd.components()
+            .filter(|c| !matches!(c,
+                std::path::Component::RootDir | std::path::Component::Prefix(_)))
+            .collect();
+        let dir = base.join("projects").join(cwd_rel);
         fs::create_dir_all(&dir).ok();
         dir
     }
@@ -459,15 +442,17 @@ impl CommonConfig {
 /// Recursive helper for `CommonConfig::claimed_local_ports`.
 ///
 /// Walks `dir` looking for `common.toml` files. When one is found, parses
-/// it and records the local transport port (if any), then stops recursing
-/// into that directory. Directories containing `dir == skip` are skipped.
+/// it and records the TCP transport ports (local and tailscale-serve) if any.
+/// Recursion always continues into subdirectories so that nested CWDs
+/// (e.g. `~/code/foo` and `~/code/foo/bar`) are both scanned.
+/// Directories equal to `skip` (the current project) are not read.
 fn collect_claimed_ports(dir: &Path, skip: &Path, ports: &mut HashSet<u16>) {
     let toml_path = dir.join("common.toml");
-    if toml_path.exists() {
-        if dir != skip {
-            if let Ok(text) = fs::read_to_string(&toml_path) {
-                if let Ok(cfg) = toml::from_str::<CommonConfig>(&text) {
-                    if let Some(tc) = cfg.transports.get("local") {
+    if toml_path.exists() && dir != skip {
+        if let Ok(text) = fs::read_to_string(&toml_path) {
+            if let Ok(cfg) = toml::from_str::<CommonConfig>(&text) {
+                for key in &["local", "tailscale-serve"] {
+                    if let Some(tc) = cfg.transports.get(*key) {
                         if let Some(port) = tc.port {
                             ports.insert(port);
                         }
@@ -475,7 +460,6 @@ fn collect_claimed_ports(dir: &Path, skip: &Path, ports: &mut HashSet<u16>) {
                 }
             }
         }
-        return; // Don't recurse inside a project dir
     }
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -621,6 +605,62 @@ mod tests {
         collect_claimed_ports(&projects, &current, &mut claimed);
 
         assert!(!claimed.contains(&8765), "current project's own port must not be in claimed set");
+    }
+
+    #[test]
+    fn collect_claimed_ports_includes_tailscale_serve() {
+        let root = tempdir().unwrap();
+        let projects = root.path().join("projects");
+
+        // Project A: tailscale-serve at 8766
+        let proj_a = projects.join("project-a");
+        std::fs::create_dir_all(&proj_a).unwrap();
+        let mut cfg_a = CommonConfig::default();
+        cfg_a.transports.insert("tailscale-serve".to_string(), TransportConfig {
+            enabled: true, port: Some(8766), ..Default::default()
+        });
+        cfg_a.save_to_dir(&proj_a).unwrap();
+
+        // Project B (current): should see 8766 as claimed
+        let proj_b = projects.join("project-b");
+        std::fs::create_dir_all(&proj_b).unwrap();
+
+        let mut claimed = HashSet::new();
+        collect_claimed_ports(&projects, &proj_b, &mut claimed);
+        assert!(claimed.contains(&8766), "tailscale-serve port must be in claimed set");
+    }
+
+    #[test]
+    fn collect_claimed_ports_handles_nested_cwds() {
+        let root = tempdir().unwrap();
+        let projects = root.path().join("projects");
+
+        // Parent CWD: port 8765
+        let parent = projects.join("code").join("foo");
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut cfg_parent = CommonConfig::default();
+        cfg_parent.transports.insert("local".to_string(), TransportConfig {
+            enabled: true, port: Some(8765), ..Default::default()
+        });
+        cfg_parent.save_to_dir(&parent).unwrap();
+
+        // Child CWD nested inside parent: port 8766
+        let child = parent.join("bar");
+        std::fs::create_dir_all(&child).unwrap();
+        let mut cfg_child = CommonConfig::default();
+        cfg_child.transports.insert("local".to_string(), TransportConfig {
+            enabled: true, port: Some(8766), ..Default::default()
+        });
+        cfg_child.save_to_dir(&child).unwrap();
+
+        // Current project: should see both
+        let current = projects.join("other");
+        std::fs::create_dir_all(&current).unwrap();
+
+        let mut claimed = HashSet::new();
+        collect_claimed_ports(&projects, &current, &mut claimed);
+        assert!(claimed.contains(&8765), "parent CWD port must be found");
+        assert!(claimed.contains(&8766), "nested child CWD port must be found");
     }
 
     #[test]

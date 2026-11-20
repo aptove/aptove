@@ -940,7 +940,9 @@ impl App {
                     self.show_transport_pick();
                     return;
                 }
-                let tc = TransportConfig { enabled: true, port: Some(8766), tls: None, ..Default::default() };
+                let claimed = CommonConfig::claimed_local_ports();
+                let port = (8766u16..).find(|p| !claimed.contains(p)).unwrap_or(8766);
+                let tc = TransportConfig { enabled: true, port: Some(port), tls: None, ..Default::default() };
                 self.config.transports.insert("tailscale-serve".to_string(), tc);
                 let _ = self.config.save();
                 self.selected_transport = Some("tailscale-serve".to_string());
