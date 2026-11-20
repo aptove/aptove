@@ -8,7 +8,7 @@ use ratatui::{
 
 const AGENT_DOCS_URL: &str = "https://docs.aptove.com/aptove/agent#available-agents";
 const TRANSPORT_DOCS_URL: &str = "https://docs.aptove.com/aptove/transports";
-use crate::tui::screens::popup::{PUSH_SERVICE_DOCS_URL, PUSH_SERVER_DOCS_URL};
+use crate::tui::screens::popup::{PUSH_REGISTER_URL, PUSH_SERVICE_DOCS_URL, PUSH_SERVER_DOCS_URL};
 
 use crate::common_config::CommonConfig;
 use crate::tailscale::{is_tailscale_available, is_tailscale_installed};
@@ -330,6 +330,12 @@ pub fn wizard_url_at(step: &WizardStep, col: u16, row: u16, term: Rect) -> Optio
                 let url = if *selected == 2 { PUSH_SERVER_DOCS_URL } else { PUSH_SERVICE_DOCS_URL };
                 return Some(url);
             }
+        }
+    }
+    if matches!(step, WizardStep::PushWizardAptoveForm { .. }) {
+        // Register link is rendered at inner.y + 1 (must match render_wizard below).
+        if row == inner.y + 1 && in_width {
+            return Some(PUSH_REGISTER_URL);
         }
     }
     None

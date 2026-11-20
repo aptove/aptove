@@ -86,7 +86,7 @@ pub fn render_popup(
 
 // ── Push configuration ────────────────────────────────────────────────────────
 
-const PUSH_REGISTER_URL: &str = "https://dash.aptove.com";
+pub(crate) const PUSH_REGISTER_URL: &str = "https://dash.aptove.com";
 pub(crate) const PUSH_SERVICE_DOCS_URL: &str = "https://docs.aptove.com/push-service/overview";
 pub(crate) const PUSH_SERVER_DOCS_URL: &str  = "https://docs.aptove.com/push-server/overview";
 const PUSH_MENU_LABELS: &[&str] = &[
