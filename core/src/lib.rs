@@ -5,6 +5,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod agent_pool;
 pub mod bridge;
 pub mod common_config;
+pub mod device_id;
 pub mod file_log_layer;
 pub mod file_permissions;
 pub mod pairing;

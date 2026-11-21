@@ -72,6 +72,11 @@ pub struct PushRelayConfig {
     /// OAuth2 client_secret issued by the token service.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub client_secret: String,
+    /// Server-generated binding secret, issued on first token request.
+    /// Required for all subsequent token requests when the token service
+    /// enforces binding (ENFORCE_BINDING=true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_secret: Option<String>,
 }
 
 /// Stable agent identity and multi-transport settings. Stored as `common.toml`.

@@ -34,6 +34,15 @@ pub struct PushRelayClient {
     /// agent name, to avoid leaking potentially-sensitive folder names to the
     /// push relay, Apple APNs, or Google FCM.
     generic_title: bool,
+    /// Agent UUID for abuse tracking — sent with every token request.
+    agent_id: Option<String>,
+    /// Server-generated binding secret for credential binding enforcement.
+    binding_secret: Option<String>,
+    /// SHA-256 hash of OS machine-id for abuse detection.
+    device_id: Option<String>,
+    /// Callback invoked when the token service returns a binding_secret on first use.
+    /// The callback receives the binding_secret to persist to config.
+    binding_secret_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 /// Request to register a device token with the relay
@@ -65,6 +74,8 @@ struct PushRequest {
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
+    /// Returned only on first use when the token service enforces binding.
+    binding_secret: Option<String>,
 }
 
 /// Push relay API response
@@ -97,6 +108,10 @@ impl PushRelayClient {
             client_secret: None,
             jwt_cache: Arc::new(RwLock::new(None)),
             generic_title: true,
+            agent_id: None,
+            binding_secret: None,
+            device_id: None,
+            binding_secret_callback: None,
         }
     }
 
@@ -106,6 +121,33 @@ impl PushRelayClient {
     /// there to Apple APNs or Google FCM.
     pub fn with_generic_title(mut self, v: bool) -> Self {
         self.generic_title = v;
+        self
+    }
+
+    /// Set the agent UUID for abuse tracking.
+    pub fn with_agent_id(mut self, agent_id: Option<String>) -> Self {
+        self.agent_id = agent_id;
+        self
+    }
+
+    /// Set the binding secret for credential binding enforcement.
+    pub fn with_binding_secret(mut self, binding_secret: Option<String>) -> Self {
+        self.binding_secret = binding_secret;
+        self
+    }
+
+    /// Set the device ID (SHA-256 hash of OS machine-id).
+    pub fn with_device_id(mut self, device_id: Option<String>) -> Self {
+        self.device_id = device_id;
+        self
+    }
+
+    /// Set a callback invoked when the server returns a binding_secret on first use.
+    pub fn with_binding_secret_callback<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(String) + Send + Sync + 'static,
+    {
+        self.binding_secret_callback = Some(Arc::new(cb));
         self
     }
 
@@ -150,10 +192,21 @@ impl PushRelayClient {
             .context("client_secret not configured")?;
 
         let url = format!("{}/token", token_url.trim_end_matches('/'));
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "client_id": client_id,
             "client_secret": client_secret,
         });
+
+        // Include abuse-prevention fields (harmless if server ignores them)
+        if let Some(ref agent_id) = self.agent_id {
+            body["agent_id"] = serde_json::Value::String(agent_id.clone());
+        }
+        if let Some(ref device_id) = self.device_id {
+            body["device_id"] = serde_json::Value::String(device_id.clone());
+        }
+        if let Some(ref binding_secret) = self.binding_secret {
+            body["binding_secret"] = serde_json::Value::String(binding_secret.clone());
+        }
 
         debug!("Fetching JWT from token service: {}", url);
         let res = self
@@ -166,13 +219,25 @@ impl PushRelayClient {
 
         let status = res.status();
         if !status.is_success() {
-            anyhow::bail!("Token service returned HTTP {}", status);
+            let error_body = res.text().await.unwrap_or_default();
+            if error_body.contains("binding_secret_required") {
+                error!("Token service requires a binding_secret. This client credential is already bound to another machine. Create a new client in the dashboard.");
+            }
+            anyhow::bail!("Token service returned HTTP {}: {}", status, error_body);
         }
 
         let token_resp: TokenResponse = res
             .json()
             .await
             .context("Failed to parse token service response")?;
+
+        // If the server returned a binding_secret (first use), persist it via callback
+        if let Some(ref bs) = token_resp.binding_secret {
+            info!("Received binding_secret from token service (first use)");
+            if let Some(ref cb) = self.binding_secret_callback {
+                cb(bs.clone());
+            }
+        }
 
         let expires_at = Instant::now()
             + Duration::from_secs(token_resp.expires_in.saturating_sub(60));

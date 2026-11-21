@@ -190,15 +190,41 @@ pub async fn run_bridge(
     info!("Agent command: {}", agent_command);
 
     // Build push relay client.
+    let device_id = crate::device_id::get_device_id();
     let push_relay_arc: Option<std::sync::Arc<PushRelayClient>> = if let Some(push_cfg) = config.effective_push_relay() {
         if !push_cfg.url.is_empty() && !push_cfg.token_url.is_empty() && !push_cfg.client_id.is_empty() {
+            // Callback to persist binding_secret to config on first use
+            let config_dir_for_cb = config_dir.to_path_buf();
+            let push_selection_for_cb = config.push_selection.clone();
+            let binding_cb = move |secret: String| {
+                if let Ok(mut cfg) = crate::common_config::CommonConfig::load_from_dir(&config_dir_for_cb) {
+                    // Update the correct push relay config based on selection
+                    let target = match &push_selection_for_cb {
+                        Some(crate::common_config::PushSelection::Custom) => cfg.custom_push_relay.as_mut(),
+                        _ => cfg.aptove_push_relay.as_mut(),
+                    };
+                    if let Some(pr) = target {
+                        pr.binding_secret = Some(secret);
+                        if let Err(e) = cfg.save_to_dir(&config_dir_for_cb) {
+                            tracing::error!("Failed to save binding_secret to config: {}", e);
+                        } else {
+                            tracing::info!("Binding secret saved to config");
+                        }
+                    }
+                }
+            };
+
             let client = PushRelayClient::new(push_cfg.url.clone())
                 .with_jwt_credentials(
                     push_cfg.token_url.clone(),
                     push_cfg.client_id.clone(),
                     push_cfg.client_secret.clone(),
                 )
-                .with_generic_title(config.push_generic_title);
+                .with_generic_title(config.push_generic_title)
+                .with_agent_id(Some(config.agent_id.clone()).filter(|s| !s.is_empty()))
+                .with_binding_secret(push_cfg.binding_secret.clone())
+                .with_device_id(device_id.clone())
+                .with_binding_secret_callback(binding_cb);
             info!("Push relay: JWT auth (client_id={}, relay={})", push_cfg.client_id, push_cfg.url);
             Some(std::sync::Arc::new(client))
         } else {

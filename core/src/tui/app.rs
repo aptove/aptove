@@ -736,6 +736,7 @@ impl App {
                         token_url,
                         client_id,
                         client_secret,
+                        binding_secret: None,
                     });
                     self.config.push_selection = Some(PushSelection::Custom);
                     let _ = self.config.save();
@@ -799,6 +800,7 @@ impl App {
                         token_url: "https://token.aptove.com".to_string(),
                         client_id,
                         client_secret,
+                        binding_secret: None,
                     });
                     self.config.push_selection = Some(PushSelection::Aptove);
                     let _ = self.config.save();
@@ -832,6 +834,7 @@ impl App {
                         token_url,
                         client_id,
                         client_secret,
+                        binding_secret: None,
                     });
                     self.config.push_selection = Some(PushSelection::Custom);
                     let _ = self.config.save();
@@ -1515,11 +1518,16 @@ impl App {
             Some(p) if !p.url.is_empty() && !p.client_id.is_empty() => p.clone(),
             _ => return,
         };
+        let agent_id = Some(self.config.agent_id.clone()).filter(|s| !s.is_empty());
+        let device_id = crate::device_id::get_device_id();
         let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
             use crate::push::PushRelayClient;
             let client = PushRelayClient::new(push_cfg.url.clone())
-                .with_jwt_credentials(push_cfg.token_url.clone(), push_cfg.client_id.clone(), push_cfg.client_secret.clone());
+                .with_jwt_credentials(push_cfg.token_url.clone(), push_cfg.client_id.clone(), push_cfg.client_secret.clone())
+                .with_agent_id(agent_id)
+                .with_binding_secret(push_cfg.binding_secret.clone())
+                .with_device_id(device_id);
             let result = client.notify("test").await.map_err(|e| e.to_string());
             // Yield briefly so all trace-level logs emitted during the push operation
             // have time to reach the event channel before the result message is enqueued.
@@ -1722,6 +1730,7 @@ impl App {
                                 token_url: "https://token.aptove.com".to_string(),
                                 client_id,
                                 client_secret,
+                                binding_secret: None,
                             });
                             self.config.push_selection = Some(PushSelection::Aptove);
                             let _ = self.config.save();
@@ -1786,6 +1795,7 @@ impl App {
                                 token_url,
                                 client_id,
                                 client_secret,
+                                binding_secret: None,
                             });
                             self.config.push_selection = Some(PushSelection::Custom);
                             let _ = self.config.save();
